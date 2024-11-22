@@ -42,6 +42,18 @@ class SocraticProcessor {
                     {
                         type: 'verification',
                         content: 'Can you explain what you understand so far?'
+                    },
+                    {
+                        type: 'deep_dive',
+                        content: `What are the key components of ${concept}?`
+                    },
+                    {
+                        type: 'application',
+                        content: `Can you think of an example where ${concept} is used?`
+                    },
+                    {
+                        type: 'summary',
+                        content: `How would you summarize ${concept} in your own words?`
                     }
                 ]
             };
