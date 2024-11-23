@@ -26,12 +26,13 @@
     },
     "dependencies": {
         "@azure/search-documents": "^12.0.0",
-        "@microsoft/teams-ai": "^1.1.0",
+        "@microsoft/teams-ai": "^1.6.1",
         "botbuilder": "^4.20.0",
         "chromadb": "^1.9.4",
         "langchain": "^0.3.6",
         "openai": "^4.73.0",
         "pdf-parse": "^1.1.1",
+        "pdfjs-dist": "^4.8.69",
         "restify": "^10.0.0"
     },
     "devDependencies": {
