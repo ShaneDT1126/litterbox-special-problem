@@ -14,9 +14,11 @@ const model = new OpenAIModel({
   useSystemMessages: true,
   logRequests: true,
 });
+
 const prompts = new PromptManager({
   promptsFolder: path.join(__dirname, "../prompts"),
 });
+
 const planner = new ActionPlanner({
   model,
   prompts,
@@ -38,7 +40,7 @@ const app = new Application({
 });
 
 app.conversationUpdate("membersAdded", async (turnContext) => {
-  const welcomeText = "How can I help you today?";
+  const welcomeText = "Hello! I'm your Computer Architecture tutor. I'll help guide you through concepts using questions and examples. What would you like to learn about?";
   for (const member of turnContext.activity.membersAdded) {
     if (member.id !== turnContext.activity.recipient.id) {
       await turnContext.sendActivity(MessageFactory.text(welcomeText));
