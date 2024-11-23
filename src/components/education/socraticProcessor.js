@@ -1,67 +1,91 @@
 class SocraticProcessor {
     constructor() {
+        this.teachingSteps = {
+            UNDERSTAND: "understand",
+            BREAK_DOWN: "break_down",
+            GUIDE: "guide",
+            VERIFY: "verify",
+            ELABORATE: "elaborate"
+        };
+
         this.promptTemplates = {
-            concept_explanation: `
-                As a Computer Architecture tutor, I'll help you understand {concept}.
-                Let's break this down step by step:
-                1. First, can you tell me what you already know about {concept}?
-                2. {context}
-                3. How would you explain {concept} in your own words?
-            `,
-            problem_solving: `
-                Let's solve this problem together:
-                1. What do you think is the first step in solving this?
-                2. {context}
-                3. Can you identify the key components we need to consider?
-            `
+            understand: "What do you already know about {concept}?",
+            break_down: "Let's break this down into smaller parts. First, let's look at {part}.",
+            guide: "Think about {concept}. What might be the next logical step?",
+            verify: "Can you explain why you think that's the case?",
+            elaborate: "How would this concept connect to {related_concept}?"
         };
     }
 
     async processQuery(query, context, queryType) {
         try {
-            const template = this.promptTemplates[queryType.type];
-            const concept = query.replace(/what is|explain|how does/gi, '').trim();
-
-            const socraticSteps = {
-                type: queryType.type,
+            const concept = this.extractMainConcept(query);
+            const steps = await this.createSocraticSteps(concept, context, queryType);
+            
+            return {
                 concept: concept,
                 context: context,
-                steps: [
-                    {
-                        type: 'question',
-                        content: 'What do you already know about this topic?'
-                    },
-                    {
-                        type: 'context',
-                        content: context
-                    },
-                    {
-                        type: 'guidance',
-                        content: `Let's break down ${concept} into simpler parts.`
-                    },
-                    {
-                        type: 'verification',
-                        content: 'Can you explain what you understand so far?'
-                    },
-                    {
-                        type: 'deep_dive',
-                        content: `What are the key components of ${concept}?`
-                    },
-                    {
-                        type: 'application',
-                        content: `Can you think of an example where ${concept} is used?`
-                    },
-                    {
-                        type: 'summary',
-                        content: `How would you summarize ${concept} in your own words?`
-                    }
-                ]
+                steps: steps,
+                queryType: queryType.type
             };
-
-            return socraticSteps;
         } catch (error) {
-            console.error("Error processing query:", error);
+            console.error("Error in processQuery:", error);
             throw error;
         }
     }
+
+    extractMainConcept(query) {
+        // Remove common question words and get the main concept
+        return query
+            .toLowerCase()
+            .replace(/what is|how does|explain|describe|tell me about/g, '')
+            .trim();
+    }
+
+    async createSocraticSteps(concept, context, queryType) {
+        const steps = [];
+
+        // Add initial understanding check
+        steps.push({
+            type: this.teachingSteps.UNDERSTAND,
+            content: this.promptTemplates.understand.replace('{concept}', concept)
+        });
+
+        // Add context-based guidance
+        if (context) {
+            steps.push({
+                type: this.teachingSteps.BREAK_DOWN,
+                content: `Based on our course materials: ${context}`
+            });
+        }
+
+        // Add concept-specific questions
+        steps.push({
+            type: this.teachingSteps.GUIDE,
+            content: this.createConceptSpecificQuestions(concept, queryType)
+        });
+
+        // Add verification step
+        steps.push({
+            type: this.teachingSteps.VERIFY,
+            content: this.promptTemplates.verify
+        });
+
+        return steps;
+    }
+
+    createConceptSpecificQuestions(concept, queryType) {
+        switch (queryType.type) {
+            case 'concept_explanation':
+                return `How would you explain ${concept} to someone who's never heard of it before?`;
+            case 'problem_solving':
+                return `What information do we need to solve this problem about ${concept}?`;
+            case 'comparison':
+                return `What are the key aspects of ${concept} we should focus on?`;
+            default:
+                return this.promptTemplates.guide.replace('{concept}', concept);
+        }
+    }
 }
+
+module.exports = { SocraticProcessor };
