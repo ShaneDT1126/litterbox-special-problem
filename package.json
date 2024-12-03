@@ -35,9 +35,11 @@
         "chromadb": "^1.9.4",
         "dotenv": "^16.4.5",
         "langchain": "^0.1.17",
+        "node-cache": "^5.1.2",
         "pdf-parse": "^1.1.1",
         "pdfjs-dist": "^4.8.69",
-        "restify": "^10.0.0"
+        "restify": "^10.0.0",
+        "winston": "^3.17.0"
     },
     "devDependencies": {
         "env-cmd": "^10.1.0",
