@@ -1,6 +1,6 @@
 const { OpenAIEmbeddings } = require("@langchain/openai");
 const { Chroma } = require("@langchain/community/vectorstores/chroma");
-const { Document } = require("langchain/document");
+const logger = require('../../utils/logger');
 
 class VectorStore {
     constructor() {
@@ -17,11 +17,27 @@ class VectorStore {
             advanced: ["virtual_memory", "cache_coherence", "branch_prediction"],
             performance: ["optimization", "throughput", "latency"]
         };
+
+        logger.loggers.vectorStore.info({
+            type: 'initialization',
+            details: {
+                collectionName: this.collectionName,
+                relevanceThreshold: this.relevanceThreshold,
+                topicFiltersCount: Object.keys(this.topicFilters).length
+            }
+        });
     }
 
     async initialize() {
+        const startTime = Date.now();
         try {
-            console.log("Initializing vector store...");
+            logger.loggers.vectorStore.info({
+                type: 'initialize_start',
+                details: {
+                    collectionName: this.collectionName
+                }
+            });
+            
             this.vectorStore = await Chroma.fromExistingCollection(
                 this.embeddings,
                 { 
@@ -32,12 +48,35 @@ class VectorStore {
                     }
                 }
             );
-            console.log("Vector store initialized successfully");
+
+            logger.loggers.vectorStore.info({
+                type: 'initialize_complete',
+                details: {
+                    processingTime: Date.now() - startTime,
+                    status: 'success'
+                }
+            });
         } catch (error) {
-            console.log("Creating new collection...");
+            logger.loggers.vectorStore.error({
+                type: 'initialize_error',
+                details: {
+                    message: error.message,
+                    stack: error.stack,
+                    processingTime: Date.now() - startTime
+                }
+            });
+
             try {
+                const createStartTime = Date.now();
+                logger.loggers.vectorStore.info({
+                    type: 'create_collection_start',
+                    details: {
+                        collectionName: this.collectionName
+                    }
+                });
+
                 this.vectorStore = await Chroma.fromDocuments(
-                    [], // Empty documents array
+                    [],
                     this.embeddings,
                     {
                         collectionName: this.collectionName,
@@ -47,64 +86,154 @@ class VectorStore {
                         }
                     }
                 );
-                console.log("New collection created successfully");
+
+                logger.loggers.vectorStore.info({
+                    type: 'create_collection_complete',
+                    details: {
+                        processingTime: Date.now() - createStartTime,
+                        status: 'success'
+                    }
+                });
             } catch (createError) {
-                console.error("Error creating collection:", createError);
+                logger.loggers.vectorStore.error({
+                    type: 'create_collection_error',
+                    details: {
+                        message: createError.message,
+                        stack: createError.stack,
+                        processingTime: Date.now() - createStartTime
+                    }
+                });
                 throw createError;
             }
         }
     }
 
+
     async addDocuments(documents) {
+        const startTime = Date.now();
         try {
-            console.log(`Adding ${documents.length} documents to vector store...`);
+            logger.loggers.vectorStore.info({
+                type: 'add_documents_start',
+                details: {
+                    documentCount: documents.length
+                }
+            });
             
-            // Process documents in batches to prevent memory issues
             const batchSize = 50;
             for (let i = 0; i < documents.length; i += batchSize) {
+                const batchStartTime = Date.now();
                 const batch = documents.slice(i, i + batchSize);
                 await this.processBatch(batch);
+
+                logger.loggers.vectorStore.info({
+                    type: 'batch_process',
+                    details: {
+                        batchSize: batch.length,
+                        batchNumber: Math.floor(i / batchSize) + 1,
+                        totalBatches: Math.ceil(documents.length / batchSize),
+                        processingTime: Date.now() - batchStartTime
+                    }
+                });
             }
 
-            console.log("Documents added successfully");
+            logger.loggers.vectorStore.info({
+                type: 'add_documents_complete',
+                details: {
+                    documentCount: documents.length,
+                    processingTime: Date.now() - startTime
+                }
+            });
         } catch (error) {
-            console.error("Error adding documents:", error);
+            logger.loggers.vectorStore.error({
+                type: 'add_documents_error',
+                details: {
+                    documentCount: documents.length,
+                    message: error.message,
+                    stack: error.stack,
+                    processingTime: Date.now() - startTime
+                }
+            });
             throw error;
         }
     }
 
     async processBatch(documents) {
-        // Add metadata and IDs to documents
-        const enhancedDocs = documents.map(doc => ({
-            ...doc,
-            metadata: {
-                ...doc.metadata,
-                timestamp: new Date().toISOString(),
-                source: "computer_architecture_textbook"
-            }
-        }));
+        const startTime = Date.now();
+        try {
+            const enhancedDocs = documents.map(doc => ({
+                ...doc,
+                metadata: {
+                    ...doc.metadata,
+                    timestamp: new Date().toISOString(),
+                    source: "computer_architecture_textbook"
+                }
+            }));
 
-        await this.vectorStore.addDocuments(enhancedDocs);
+            await this.vectorStore.addDocuments(enhancedDocs);
+
+            logger.loggers.vectorStore.info({
+                type: 'process_batch',
+                details: {
+                    documentCount: documents.length,
+                    processingTime: Date.now() - startTime
+                }
+            });
+        } catch (error) {
+            logger.loggers.vectorStore.error({
+                type: 'process_batch_error',
+                details: {
+                    documentCount: documents.length,
+                    message: error.message,
+                    stack: error.stack,
+                    processingTime: Date.now() - startTime
+                }
+            });
+            throw error;
+        }
     }
 
     async query(query, options = {}) {
+        const startTime = Date.now();
         try {
-            // Apply topic-specific filtering
+            logger.loggers.vectorStore.info({
+                type: 'query_start',
+                details: {
+                    query: query,
+                    options: options
+                }
+            });
+
             const filter = this.buildMetadataFilter(options);
-            
-            // Retrieve relevant documents
             const results = await this.vectorStore.similaritySearchWithScore(
                 query,
-                5, // Number of results to retrieve
+                5,
                 filter
             );
 
-            // Process and filter results
             const processedResults = await this.processQueryResults(results, options);
+            const formattedResults = this.formatResults(processedResults);
 
-            return this.formatResults(processedResults);
+            logger.loggers.vectorStore.info({
+                type: 'query_complete',
+                details: {
+                    query: query,
+                    resultCount: processedResults.length,
+                    processingTime: Date.now() - startTime,
+                    averageRelevance: this.calculateAverageRelevance(processedResults)
+                }
+            });
+
+            return formattedResults;
         } catch (error) {
-            console.error("Error querying vector store:", error);
+            logger.loggers.vectorStore.error({
+                type: 'query_error',
+                details: {
+                    query: query,
+                    message: error.message,
+                    stack: error.stack,
+                    processingTime: Date.now() - startTime
+                }
+            });
             throw error;
         }
     }
@@ -126,18 +255,44 @@ class VectorStore {
     }
 
     async processQueryResults(results, options) {
-        // Filter results based on relevance threshold
-        const filteredResults = results.filter(([doc, score]) => 
-            score >= this.relevanceThreshold
-        );
+        const startTime = Date.now();
+        try {
+            const filteredResults = results.filter(([doc, score]) => 
+                score >= this.relevanceThreshold
+            );
 
-        // Sort by relevance and process
-        return filteredResults.map(([doc, score]) => ({
-            content: doc.pageContent,
-            metadata: doc.metadata,
-            relevanceScore: score,
-            concepts: doc.metadata.concepts || []
-        }));
+            const processedResults = filteredResults.map(([doc, score]) => ({
+                content: doc.pageContent,
+                metadata: doc.metadata,
+                relevanceScore: score,
+                concepts: doc.metadata.concepts || []
+            }));
+
+            logger.loggers.vectorStore.info({
+                type: 'process_results',
+                details: {
+                    resultCounts: {
+                        initial: results.length,
+                        filtered: filteredResults.length,
+                        final: processedResults.length
+                    },
+                    threshold: this.relevanceThreshold,
+                    processingTime: Date.now() - startTime
+                }
+            });
+
+            return processedResults;
+        } catch (error) {
+            logger.loggers.vectorStore.error({
+                type: 'process_results_error',
+                details: {
+                    message: error.message,
+                    stack: error.stack,
+                    processingTime: Date.now() - startTime
+                }
+            });
+            throw error;
+        }
     }
 
     formatResults(results) {
@@ -183,31 +338,82 @@ class VectorStore {
     }
 
     async deleteCollection() {
+        const startTime = Date.now();
         try {
+            logger.loggers.vectorStore.info({
+                type: 'delete_collection_start',
+                details: {
+                    collectionName: this.collectionName
+                }
+            });
+
             await this.vectorStore.delete();
-            console.log("Collection deleted successfully");
+
+            logger.loggers.vectorStore.info({
+                type: 'delete_collection_complete',
+                details: {
+                    collectionName: this.collectionName,
+                    processingTime: Date.now() - startTime
+                }
+            });
         } catch (error) {
-            console.error("Error deleting collection:", error);
+            logger.loggers.vectorStore.error({
+                type: 'delete_collection_error',
+                details: {
+                    collectionName: this.collectionName,
+                    message: error.message,
+                    stack: error.stack,
+                    processingTime: Date.now() - startTime
+                }
+            });
             throw error;
         }
     }
 
     async getCollectionStats() {
+        const startTime = Date.now();
         try {
+            logger.loggers.vectorStore.info({
+                type: 'get_stats_start',
+                details: {
+                    collectionName: this.collectionName
+                }
+            });
+
             const response = await fetch(`http://localhost:8000/api/v1/collections/${this.collectionName}`);
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
             const data = await response.json();
             
-            return {
+            const stats = {
                 documentCount: data.count || 0,
                 lastUpdated: new Date().toISOString(),
                 status: "Connected to ChromaDB",
                 metadata: data.metadata || {}
             };
+
+            logger.loggers.vectorStore.info({
+                type: 'get_stats_complete',
+                details: {
+                    collectionName: this.collectionName,
+                    stats: stats,
+                    processingTime: Date.now() - startTime
+                }
+            });
+
+            return stats;
         } catch (error) {
-            console.error("Error getting collection stats:", error);
+            logger.loggers.vectorStore.error({
+                type: 'get_stats_error',
+                details: {
+                    collectionName: this.collectionName,
+                    message: error.message,
+                    stack: error.stack,
+                    processingTime: Date.now() - startTime
+                }
+            });
+
             return {
                 documentCount: "Unknown",
                 lastUpdated: new Date().toISOString(),
