@@ -1,3 +1,4 @@
+const logger = require('../../utils/logger');
 class SemanticRouter {
     constructor() {
         this.queryTypes = {
@@ -67,27 +68,59 @@ class SemanticRouter {
                 "am i right", "is this correct", "is it true"
             ]
         };
+
+        // Log initialization
+        logger.loggers.semanticRouter.info({
+            type: 'initialization',
+            details: {
+                queryTypes: Object.keys(this.queryTypes),
+                topicTaxonomyLoaded: Boolean(this.topicTaxonomy),
+                coreTopicsCount: Object.keys(this.topicTaxonomy.core_topics).length,
+                relatedConceptsCount: Object.keys(this.topicTaxonomy.related_concepts).length
+            }
+        });
     }
 
     async routeQuery(query) {
+        const startTime = Date.now();
         try {
+            logger.loggers.semanticRouter.info({
+                type: 'route_start',
+                details: {
+                    query: query
+                }
+            });
+    
             const normalizedQuery = query.toLowerCase().trim();
             
-            // Step 1: Check relevance to Computer Architecture
             const relevanceCheck = this.checkQueryRelevance(normalizedQuery);
             if (!relevanceCheck.isRelevant) {
+                logger.loggers.semanticRouter.info({
+                    type: 'out_of_scope_detected',
+                    details: {
+                        query: query,
+                        reason: relevanceCheck.reason,
+                        processingTime: Date.now() - startTime
+                    }
+                });
                 return this.createOutOfScopeResponse(relevanceCheck.reason);
             }
-
-            // Step 2: Analyze query
+    
             const queryAnalysis = this.analyzeQuery(normalizedQuery);
-
-            // Step 3: Validate confidence
+    
             if (queryAnalysis.confidence < 0.4) {
+                logger.loggers.semanticRouter.info({
+                    type: 'low_confidence_detected',
+                    details: {
+                        query: query,
+                        confidence: queryAnalysis.confidence,
+                        processingTime: Date.now() - startTime
+                    }
+                });
                 return this.createClarificationRequest(queryAnalysis);
             }
-
-            return {
+    
+            const result = {
                 type: queryAnalysis.type,
                 topic: queryAnalysis.topic,
                 subtopic: queryAnalysis.subtopic,
@@ -95,65 +128,78 @@ class SemanticRouter {
                 suggestedApproach: queryAnalysis.suggestedApproach,
                 relevantConcepts: queryAnalysis.relevantConcepts
             };
-
+    
+            logger.loggers.semanticRouter.info({
+                type: 'route_complete',
+                details: {
+                    query: query,
+                    result: result,
+                    processingTime: Date.now() - startTime
+                }
+            });
+    
+            return result;
         } catch (error) {
-            console.error("Error in routeQuery:", error);
+            logger.loggers.semanticRouter.error({
+                type: 'route_error',
+                details: {
+                    query: query,
+                    message: error.message,
+                    stack: error.stack,
+                    processingTime: Date.now() - startTime
+                }
+            });
             throw error;
         }
     }
-
+    
     checkQueryRelevance(query) {
-        // Check 1: Explicit non-relevant topics
-        const nonRelevantMatch = this.nonRelevantTopics.find(topic => 
-            query.includes(topic.toLowerCase())
-        );
-        
-        if (nonRelevantMatch) {
-            return {
-                isRelevant: false,
-                reason: `This appears to be about ${nonRelevantMatch}, which is outside my expertise in Computer Architecture.`
-            };
-        }
+        const startTime = Date.now();
+        try {
+            const nonRelevantMatch = this.nonRelevantTopics.find(topic => 
+                query.includes(topic.toLowerCase())
+            );
+            
+            if (nonRelevantMatch) {
+                logger.loggers.semanticRouter.info({
+                    type: 'relevance_check',
+                    details: {
+                        result: 'non_relevant',
+                        matchedTopic: nonRelevantMatch,
+                        processingTime: Date.now() - startTime
+                    }
+                });
 
-        // Check 2: Core topics
-        const hasCoreTopic = Object.entries(this.topicTaxonomy.core_topics)
-            .some(([category, topics]) => {
-                return query.includes(category) || 
-                       topics.some(topic => query.includes(topic.toLowerCase()));
-            });
-
-        if (hasCoreTopic) {
-            return { isRelevant: true };
-        }
-
-        // Check 3: Related concepts
-        const hasRelatedConcept = Object.entries(this.topicTaxonomy.related_concepts)
-            .some(([category, concepts]) => {
-                return query.includes(category) || 
-                       concepts.some(concept => query.includes(concept.toLowerCase()));
-            });
-
-        if (hasRelatedConcept) {
-            return { isRelevant: true };
-        }
-
-        // Check 4: Context keywords with additional validation
-        const contextKeywords = this.topicTaxonomy.context_keywords.filter(keyword => 
-            query.includes(keyword)
-        );
-
-        if (contextKeywords.length > 0) {
-            // Additional validation for context keywords
-            const hasStrongContext = this.validateContextKeywords(query, contextKeywords);
-            if (hasStrongContext) {
-                return { isRelevant: true };
+                return {
+                    isRelevant: false,
+                    reason: `This appears to be about ${nonRelevantMatch}, which is outside my expertise in Computer Architecture.`
+                };
             }
-        }
 
-        return {
-            isRelevant: false,
-            reason: this.generateOutOfScopeReason(query)
-        };
+            const relevanceResult = this.checkTopicRelevance(query);
+
+            logger.loggers.semanticRouter.info({
+                type: 'relevance_check',
+                details: {
+                    result: relevanceResult.isRelevant ? 'relevant' : 'non_relevant',
+                    relevanceDetails: relevanceResult,
+                    processingTime: Date.now() - startTime
+                }
+            });
+
+            return relevanceResult;
+        } catch (error) {
+            logger.loggers.semanticRouter.error({
+                type: 'relevance_check_error',
+                details: {
+                    query: query,
+                    message: error.message,
+                    stack: error.stack,
+                    processingTime: Date.now() - startTime
+                }
+            });
+            throw error;
+        }
     }
 
     validateContextKeywords(query, foundKeywords) {
@@ -229,28 +275,28 @@ class SemanticRouter {
             suggestion: clarificationTemplates.suggestion
         };
     }
+
     analyzeQuery(query) {
+        const startTime = Date.now();
         try {
-            // Step 1: Identify query type and patterns
+            logger.loggers.semanticRouter.info({
+                type: 'analysis_start',
+                details: {
+                    query: query
+                }
+            });
+
             const queryType = this.identifyQueryType(query);
-            
-            // Step 2: Extract topics and subtopics
             const topicAnalysis = this.identifyTopicAndSubtopic(query);
-            
-            // Step 3: Find related concepts
             const relevantConcepts = this.findRelevantConcepts(query, topicAnalysis);
-            
-            // Step 4: Calculate confidence score
             const confidence = this.calculateConfidence(query, queryType, topicAnalysis);
-            
-            // Step 5: Determine teaching approach
             const suggestedApproach = this.determineSuggestedApproach(
                 queryType, 
                 topicAnalysis, 
                 confidence
             );
 
-            return {
+            const result = {
                 type: queryType,
                 topic: topicAnalysis.topic,
                 subtopic: topicAnalysis.subtopic,
@@ -258,27 +304,68 @@ class SemanticRouter {
                 suggestedApproach,
                 relevantConcepts
             };
+
+            logger.loggers.semanticRouter.info({
+                type: 'analysis_complete',
+                details: {
+                    result: result,
+                    processingTime: Date.now() - startTime
+                }
+            });
+
+            return result;
         } catch (error) {
-            console.error("Error in analyzeQuery:", error);
+            logger.loggers.semanticRouter.error({
+                type: 'analysis_error',
+                details: {
+                    query: query,
+                    message: error.message,
+                    stack: error.stack,
+                    processingTime: Date.now() - startTime
+                }
+            });
             throw error;
         }
     }
 
     identifyQueryType(query) {
-        let bestMatch = {
-            type: this.queryTypes.CONCEPT_EXPLANATION,
-            matchCount: 0
-        };
+        const startTime = Date.now();
+        try {
+            let bestMatch = {
+                type: this.queryTypes.CONCEPT_EXPLANATION,
+                matchCount: 0
+            };
 
-        // Check each query type's patterns
-        for (const [type, patterns] of Object.entries(this.questionPatterns)) {
-            const matchCount = patterns.filter(pattern => query.includes(pattern)).length;
-            if (matchCount > bestMatch.matchCount) {
-                bestMatch = { type, matchCount };
+            for (const [type, patterns] of Object.entries(this.questionPatterns)) {
+                const matchCount = patterns.filter(pattern => 
+                    query.includes(pattern)).length;
+                if (matchCount > bestMatch.matchCount) {
+                    bestMatch = { type, matchCount };
+                }
             }
-        }
 
-        return bestMatch.type;
+            logger.loggers.semanticRouter.info({
+                type: 'query_type_identification',
+                details: {
+                    identifiedType: bestMatch.type,
+                    matchCount: bestMatch.matchCount,
+                    processingTime: Date.now() - startTime
+                }
+            });
+
+            return bestMatch.type;
+        } catch (error) {
+            logger.loggers.semanticRouter.error({
+                type: 'query_type_identification_error',
+                details: {
+                    query: query,
+                    message: error.message,
+                    stack: error.stack,
+                    processingTime: Date.now() - startTime
+                }
+            });
+            throw error;
+        }
     }
 
     identifyTopicAndSubtopic(query) {
@@ -359,24 +446,49 @@ class SemanticRouter {
     }
 
     calculateConfidence(query, queryType, topicAnalysis) {
-        let confidence = 0;
+        const startTime = Date.now();
+        try {
+            let confidence = 0;
+            confidence += topicAnalysis.matchScore;
+            confidence += this.questionPatterns[queryType].some(pattern => 
+                query.includes(pattern)) ? 0.2 : 0;
 
-        // Topic match confidence (0-0.4)
-        confidence += topicAnalysis.matchScore;
+            const contextKeywordCount = this.topicTaxonomy.context_keywords
+                .filter(keyword => query.includes(keyword)).length;
+            confidence += Math.min(contextKeywordCount * 0.05, 0.2);
+            confidence += this.calculateQuerySpecificity(query, topicAnalysis);
 
-        // Query type clarity (0-0.2)
-        confidence += this.questionPatterns[queryType].some(pattern => query.includes(pattern)) ? 0.2 : 0;
+            const finalConfidence = Math.min(confidence, 1.0);
 
-        // Context keywords (0-0.2)
-        const contextKeywordCount = this.topicTaxonomy.context_keywords
-            .filter(keyword => query.includes(keyword)).length;
-        confidence += Math.min(contextKeywordCount * 0.05, 0.2);
+            logger.loggers.semanticRouter.info({
+                type: 'confidence_calculation',
+                details: {
+                    finalConfidence,
+                    components: {
+                        topicMatch: topicAnalysis.matchScore,
+                        queryTypeClarity: confidence - topicAnalysis.matchScore,
+                        contextKeywords: contextKeywordCount,
+                        specificity: this.calculateQuerySpecificity(query, topicAnalysis)
+                    },
+                    processingTime: Date.now() - startTime
+                }
+            });
 
-        // Query specificity (0-0.2)
-        confidence += this.calculateQuerySpecificity(query, topicAnalysis);
-
-        return Math.min(confidence, 1.0);
+            return finalConfidence;
+        } catch (error) {
+            logger.loggers.semanticRouter.error({
+                type: 'confidence_calculation_error',
+                details: {
+                    query: query,
+                    message: error.message,
+                    stack: error.stack,
+                    processingTime: Date.now() - startTime
+                }
+            });
+            throw error;
+        }
     }
+
 
     calculateQuerySpecificity(query, topicAnalysis) {
         let specificity = 0;
@@ -398,37 +510,65 @@ class SemanticRouter {
     }
 
     determineSuggestedApproach(queryType, topicAnalysis, confidence) {
-        const approaches = {
-            basic: {
-                method: "foundational",
-                style: "step_by_step",
-                depth: "introductory"
-            },
-            intermediate: {
-                method: "analytical",
-                style: "guided_discovery",
-                depth: "detailed"
-            },
-            advanced: {
-                method: "comprehensive",
-                style: "problem_based",
-                depth: "in_depth"
+        const startTime = Date.now();
+        try {
+            const approaches = {
+                basic: {
+                    method: "foundational",
+                    style: "step_by_step",
+                    depth: "introductory"
+                },
+                intermediate: {
+                    method: "analytical",
+                    style: "guided_discovery",
+                    depth: "detailed"
+                },
+                advanced: {
+                    method: "comprehensive",
+                    style: "problem_based",
+                    depth: "in_depth"
+                }
+            };
+
+            let complexity = "basic";
+            if (confidence > 0.7 && topicAnalysis.depth > 1) {
+                complexity = "advanced";
+            } else if (confidence > 0.5) {
+                complexity = "intermediate";
             }
-        };
 
-        // Determine complexity level
-        let complexity = "basic";
-        if (confidence > 0.7 && topicAnalysis.depth > 1) {
-            complexity = "advanced";
-        } else if (confidence > 0.5) {
-            complexity = "intermediate";
+            const approach = {
+                ...approaches[complexity],
+                queryType,
+                topicSpecific: Boolean(topicAnalysis.subtopic)
+            };
+
+            logger.loggers.semanticRouter.info({
+                type: 'approach_determination',
+                details: {
+                    complexity,
+                    approach,
+                    factors: {
+                        confidence,
+                        topicDepth: topicAnalysis.depth,
+                        hasSubtopic: Boolean(topicAnalysis.subtopic)
+                    },
+                    processingTime: Date.now() - startTime
+                }
+            });
+
+            return approach;
+        } catch (error) {
+            logger.loggers.semanticRouter.error({
+                type: 'approach_determination_error',
+                details: {
+                    message: error.message,
+                    stack: error.stack,
+                    processingTime: Date.now() - startTime
+                }
+            });
+            throw error;
         }
-
-        return {
-            ...approaches[complexity],
-            queryType,
-            topicSpecific: Boolean(topicAnalysis.subtopic)
-        };
     }
 
 }
