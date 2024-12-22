@@ -3,6 +3,7 @@ const { RecursiveCharacterTextSplitter } = require("langchain/text_splitter");
 const { Document } = require("@langchain/core/documents");
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const logger = require('../../utils/logger');
 
 class DocumentProcessor {
@@ -11,6 +12,10 @@ class DocumentProcessor {
         this.chunkOverlap = 200;
         this.dataFolder = path.join(__dirname, '../../data/computer_organization_architecture');
         
+        // Track processed files
+        this.processedFiles = new Map(); // filename -> hash
+        this.processingLock = false;
+
         // Define computer architecture specific separators
         this.separators = [
             "\n\n",    // New paragraphs
@@ -31,123 +36,137 @@ class DocumentProcessor {
                 separatorsCount: this.separators.length
             }
         });
+
+        const files = fs.readdirSync(this.dataFolder);
+        logger.loggers.documentProcessor.info({
+            type: 'files_found',
+            details: {
+                dataFolder: this.dataFolder,
+                files: files
+            }
+        });
     }
 
     async processDocuments() {
+        if (this.processingLock) {
+            logger.loggers.documentProcessor.warn({
+                type: 'processing_locked',
+                message: 'Document processing already in progress'
+            });
+            return null;
+        }
+
+        this.processingLock = true;
         const startTime = Date.now();
+
         try {
+            // Get list of PDF files and their hashes
+            const pdfFiles = await this._getPDFFilesWithHashes();
+            
+            // Filter only new or modified files
+            const filesToProcess = pdfFiles.filter(file => {
+                const currentHash = file.hash;
+                const storedHash = this.processedFiles.get(file.name);
+                return !storedHash || storedHash !== currentHash;
+            });
+
+            if (filesToProcess.length === 0) {
+                logger.loggers.documentProcessor.info({
+                    type: 'no_new_documents',
+                    message: 'No new or modified documents to process'
+                });
+                return null;
+            }
+
             logger.loggers.documentProcessor.info({
-                type: 'process_start',
+                type: 'processing_new_documents',
                 details: {
-                    operation: 'document_processing'
+                    newFileCount: filesToProcess.length,
+                    files: filesToProcess.map(f => f.name)
                 }
             });
 
-            const documents = await this.loadDocuments();
+            // Process new documents
+            const documents = await this._loadDocuments(filesToProcess);
             const processedDocs = await this.processContent(documents);
 
-            logger.loggers.documentProcessor.info({
-                type: 'process_complete',
-                details: {
-                    inputDocuments: documents.length,
-                    outputDocuments: processedDocs.length,
-                    processingTime: Date.now() - startTime
-                }
+            // Update processed files tracking
+            filesToProcess.forEach(file => {
+                this.processedFiles.set(file.name, file.hash);
             });
 
             return processedDocs;
+
         } catch (error) {
             logger.loggers.documentProcessor.error({
                 type: 'process_error',
-                details: {
-                    message: error.message,
-                    stack: error.stack,
-                    processingTime: Date.now() - startTime
-                }
+                details: { error: error.message }
             });
             throw error;
+        } finally {
+            this.processingLock = false;
         }
     }
 
-    async loadDocuments() {
-        const startTime = Date.now();
-        try {
-            const pdfFiles = fs.readdirSync(this.dataFolder)
-                .filter(file => file.toLowerCase().endsWith('.pdf'));
+    async _getPDFFilesWithHashes() {
+        const files = fs.readdirSync(this.dataFolder)
+            .filter(file => file.toLowerCase().endsWith('.pdf'))
+            .map(filename => {
+                const filePath = path.join(this.dataFolder, filename);
+                const fileContent = fs.readFileSync(filePath);
+                const hash = crypto.createHash('md5').update(fileContent).digest('hex');
+                
+                return {
+                    name: filename,
+                    path: filePath,
+                    hash
+                };
+            });
 
-            if (pdfFiles.length === 0) {
-                logger.loggers.documentProcessor.warn({
-                    type: 'load_warning',
+        return files;
+    }
+
+    async _loadDocuments(files) {
+        const documents = [];
+        for (const file of files) {
+            try {
+                const loader = new PDFLoader(file.path, {
+                    splitPages: true
+                });
+                
+                const docs = await loader.load();
+                
+                // Add file metadata to documents
+                const enhancedDocs = docs.map(doc => ({
+                    ...doc,
+                    metadata: {
+                        ...doc.metadata,
+                        fileHash: file.hash,
+                        fileName: file.name,
+                        processedDate: new Date().toISOString()
+                    }
+                }));
+
+                documents.push(...enhancedDocs);
+
+                logger.loggers.documentProcessor.info({
+                    type: 'file_loaded',
                     details: {
-                        message: 'No PDF files found in the data folder',
-                        folder: this.dataFolder
+                        fileName: file.name,
+                        pageCount: docs.length
                     }
                 });
-                throw new Error("No PDF files found in the data folder");
+            } catch (error) {
+                logger.loggers.documentProcessor.error({
+                    type: 'file_load_error',
+                    details: {
+                        fileName: file.name,
+                        error: error.message
+                    }
+                });
             }
-
-            logger.loggers.documentProcessor.info({
-                type: 'load_start',
-                details: {
-                    fileCount: pdfFiles.length,
-                    files: pdfFiles
-                }
-            });
-
-            let allDocuments = [];
-            for (const pdfFile of pdfFiles) {
-                const fileStartTime = Date.now();
-                const filePath = path.join(this.dataFolder, pdfFile);
-                
-                try {
-                    const loader = new PDFLoader(filePath, {
-                        splitPages: true
-                    });
-
-                    const docs = await loader.load();
-                    allDocuments = allDocuments.concat(docs);
-
-                    logger.loggers.documentProcessor.info({
-                        type: 'file_processed',
-                        details: {
-                            file: pdfFile,
-                            pageCount: docs.length,
-                            processingTime: Date.now() - fileStartTime
-                        }
-                    });
-                } catch (fileError) {
-                    logger.loggers.documentProcessor.error({
-                        type: 'file_processing_error',
-                        details: {
-                            file: pdfFile,
-                            message: fileError.message,
-                            stack: fileError.stack
-                        }
-                    });
-                }
-            }
-
-            logger.loggers.documentProcessor.info({
-                type: 'load_complete',
-                details: {
-                    totalFiles: pdfFiles.length,
-                    totalDocuments: allDocuments.length,
-                    processingTime: Date.now() - startTime
-                }
-            });
-
-            return allDocuments;
-        } catch (error) {
-            logger.loggers.documentProcessor.error({
-                type: 'load_error',
-                details: {
-                    message: error.message,
-                    stack: error.stack,
-                    processingTime: Date.now() - startTime
-                }
-            });
-            throw error;
         }
+        return documents;
     }
   
     async processContent(documents) {
