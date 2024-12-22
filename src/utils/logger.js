@@ -13,11 +13,20 @@ class Logger {
 
     createLogDirectories() {
         const components = [
+            'app',
             'vector_store', 
             'document_processor', 
-            'semantic_router', 
+            'semantic_router',
+            'multi_query_retriever',
+            'scaffolding',
             'token_usage',
-            'response_generator'
+            'documentManager',
+            'responseGenerator',
+            'conversationMemory',
+            'conversationManager',
+            'memoryIntegration',
+            'memoryManager',
+            'memoryTools'
         ];
         const fs = require('fs');
         
@@ -34,11 +43,23 @@ class Logger {
     }
 
     initializeLoggers() {
-        this.loggers.vectorStore = this.createComponentLogger('vector_store');
-        this.loggers.documentProcessor = this.createComponentLogger('document_processor');
-        this.loggers.semanticRouter = this.createComponentLogger('semantic_router');
-        this.loggers.tokenUsage = this.createComponentLogger('token_usage');
-        this.loggers.responseGenerator = this.createComponentLogger('response_generator'); 
+        // Initialize loggers for all components
+        this.loggers = {
+            app: this.createComponentLogger('app'),
+            vectorStore: this.createComponentLogger('vector_store'),
+            documentProcessor: this.createComponentLogger('document_processor'),
+            semanticRouter: this.createComponentLogger('semantic_router'),
+            multiQueryRetriever: this.createComponentLogger('multi_query_retriever'),
+            scaffolding: this.createComponentLogger('scaffolding'),
+            tokenUsage: this.createComponentLogger('token_usage'),
+            documentManager: this.createComponentLogger('document_manager'),
+            responseGenerator: this.createComponentLogger('response_generator'),
+            conversationMemory: this.createComponentLogger('conversationMemory'),
+            conversationManager: this.createComponentLogger('conversationManager'),
+            memoryIntegration: this.createComponentLogger('memoryIntegration'),
+            memoryManager: this.createComponentLogger('memoryManager'),
+            memoryTools: this.createComponentLogger('memoryTools')
+        };
     }
 
     createComponentLogger(component) {
@@ -92,44 +113,16 @@ class Logger {
         });
     }
 
-    logVectorOperation(operation) {
-        this.loggers.vectorStore.info({
-            type: 'operation',
-            operation: operation.type,
-            details: {
-                queryId: operation.queryId,
-                documentCount: operation.documentCount,
-                processingTime: operation.processingTime,
-                similarityScores: operation.scores,
-                ...(operation.tokenUsage && { tokenUsage: operation.tokenUsage })
-            }
-        });
-    }
-
-    logVectorError(error) {
-        this.loggers.vectorStore.error({
-            type: 'error',
-            operation: error.operation,
-            details: {
-                message: error.message,
-                stack: error.stack,
-                code: error.code
-            }
-        });
-    }
-
-    logTokenUsage(usage) {
-        this.loggers.tokenUsage.info({
-            type: 'token_usage',
-            details: {
-                component: usage.component,
-                conversationId: usage.conversationId,
-                promptTokens: usage.promptTokens,
-                completionTokens: usage.completionTokens,
-                totalTokens: usage.totalTokens,
-                cost: usage.estimatedCost
-            }
-        });
+    // Helper methods for specific logging operations
+    logOperation(component, operation, details) {
+        const logger = this.loggers[component];
+        if (logger) {
+            logger.info({
+                type: 'operation',
+                operation,
+                details
+            });
+        }
     }
 
     logError(component, error) {
@@ -145,6 +138,30 @@ class Logger {
             });
         }
     }
+
+    // Specific component logging methods
+    logVectorOperation(operation) {
+        this.logOperation('vectorStore', operation.type, {
+            queryId: operation.queryId,
+            documentCount: operation.documentCount,
+            processingTime: operation.processingTime,
+            similarityScores: operation.scores,
+            ...(operation.tokenUsage && { tokenUsage: operation.tokenUsage })
+        });
+    }
+
+    logTokenUsage(usage) {
+        this.logOperation('tokenUsage', 'token_usage', {
+            component: usage.component,
+            conversationId: usage.conversationId,
+            promptTokens: usage.promptTokens,
+            completionTokens: usage.completionTokens,
+            totalTokens: usage.totalTokens,
+            cost: usage.estimatedCost
+        });
+    }
 }
 
-module.exports = new Logger();
+// Export a singleton instance
+const logger = new Logger();
+module.exports = logger;
