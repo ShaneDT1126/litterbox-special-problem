@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  chroma:
+    image: chromadb/chroma:latest
+    volumes:
+      - chroma_data:/chroma/chroma
+    ports:
+      - "8000:8000"
+    environment:
+      - ALLOW_RESET=true
+      - ANONYMIZED_TELEMETRY=false
+      - CHROMA_SERVER_CORS_ALLOW_ORIGINS=["*"]
+      - CHROMA_SERVER_HOST=0.0.0.0
+      - CHROMA_SERVER_PORT=8000
+    networks:
+      - litterbox_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  litterbox:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./src:/app/src
+      - ./logs:/app/logs
+      - ./data:/app/data
+    ports:
+      - "3978:3978"
+      - "9239:9239"
+    environment:
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
+      - NODE_ENV=development
+      - OPENAI_API_KEY=${SECRET_OPENAI_API_KEY}
+      - SECRET_OPENAI_API_KEY=${SECRET_OPENAI_API_KEY}
+    env_file:
+      - ./env/.env.testtool.user
+    depends_on:
+      chroma:
+        condition: service_healthy
+    networks:
+      - litterbox_network
+
+networks:
+  litterbox_network:
+    driver: bridge
+
+volumes:
+  chroma_data:

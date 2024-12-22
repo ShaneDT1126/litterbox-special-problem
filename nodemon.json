@@ -1,0 +1,7 @@
+{
+    "watch": ["src/**/*.js"],
+    "ignore": ["src/data/*", "src/logs/*", "*.test.js"],
+    "ext": "js",
+    "exec": "node --inspect=9239 ./src/index.js",
+    "signal": "SIGINT"
+}
