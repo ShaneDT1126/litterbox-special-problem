@@ -1,27 +1,60 @@
-const SemanticRouter = require("../components/router/semanticRouter");
-const { VectorStore } = require("../components/rag/vectorStore");
-const DocumentProcessor = require("../components/rag/documentProcessor");
+const { SemanticRouter } = require("../components/router/semanticRouter");
+const DocumentManager = require('../components/rag/documentManager');
+const { MultiQueryRetriever } = require('../components/rag/multiQueryRetriever');
+const ScaffoldingSystem = require('../components/scaffolding/scaffoldingSystem');
+const ResponseGenerator = require('../components/response/responseGenerator');
+const ConversationMemory = require('../components/memory/conversationMemory');
+const routes = require('../components/router/routeDefinitions');
+const logger = require('../utils/logger');
 
 class MyDataSource {
     constructor(name) {
         this.name = name;
-        this.vectorStore = null;
-        this.semanticRouter = new SemanticRouter();
-        this.responseCache = new Map(); // For optimizing repeated queries
-    }
+        console.log(`MyDataSource constructed with name: ${this.name}`);
+        this.documentManager = null;
+        this.semanticRouter = null;
+        this.multiQueryRetriever = null;
+        this.scaffoldingSystem = null;
+        this.responseGenerator = null;
+        this.conversationMemory = null;
+        this.responseCache = new Map();
+    }   
 
     async init() {
         try {
-            // Remove the require statement here and use the imported VectorStore
-            this.vectorStore = new VectorStore();
-            await this.vectorStore.initialize();
+            console.log(`Initializing MyDataSource with name: ${this.name}`);
+            // Initialize components
+            this.documentManager = new DocumentManager();
+            await this.documentManager.initialize();
+            
+            const vectorStore = this.documentManager.getVectorStore();
+            
+            this.semanticRouter = new SemanticRouter(routes);
+            this.multiQueryRetriever = new MultiQueryRetriever(vectorStore);
+            this.conversationMemory = new ConversationMemory();
+            this.scaffoldingSystem = new ScaffoldingSystem(this.multiQueryRetriever, this.conversationMemory);
+            this.responseGenerator = new ResponseGenerator();
             
             // Initialize response templates
             this.initializeResponseTemplates();
             
-            console.log("MyDataSource initialized successfully");
+            logger.loggers.app.info({
+                type: 'datasource_initialization',
+                details: {
+                    name: this.name,
+                    status: 'success'
+                }
+            });
         } catch (error) {
-            console.error("Error initializing MyDataSource:", error);
+            console.error(`Error initializing MyDataSource ${this.name}:`, error);
+            logger.loggers.app.error({
+                type: 'datasource_initialization_error',
+                details: {
+                    name: this.name,
+                    message: error.message,
+                    stack: error.stack
+                }
+            });
             throw error;
         }
     }
@@ -45,136 +78,145 @@ class MyDataSource {
     }
 
     async renderData(context, memory, tokenizer, maxTokens) {
+        const query = memory.getValue('temp.input');
+        if (!query) {
+            return { output: "", length: 0, tooLong: false };
+        }
+
+        const response = await this.processQuery(query, context.activity.conversation.id);
+        const output = JSON.stringify(response);
+        const length = tokenizer.encode(output).length;
+
+        return {
+            output,
+            length,
+            tooLong: length > maxTokens
+        };
+    }
+
+    async processQuery(query, sessionId) {
         try {
-            const query = memory.getValue('temp.input');
-            if (!query) {
-                return {
-                    output: "",
-                    length: 0,
-                    tooLong: false
-                };
-            }
+            // 1. Semantic Routing
+            const routeResult = await this.semanticRouter.route(query);
 
-            // Route and validate query
-            const routingResult = await this.semanticRouter.routeQuery(query);
+            // 2. Multi-Query RAG
+            const conversationContext = this.conversationMemory.getConversationContext(sessionId);
+            const relevantContent = await this.multiQueryRetriever.retrieveDocuments(query, routeResult, conversationContext);
 
-            // Handle out-of-scope queries
-            if (routingResult.type === 'out_of_scope') {
-                return this.handleOutOfScopeQuery(routingResult, tokenizer);
-            }
+            // 3. Scaffolding System
+            const scaffoldingContext = {
+                sessionId: sessionId,
+                query: query,
+                routingResult: routeResult,
+                currentTurn: this.conversationMemory.getTurnCount(sessionId),
+                conversationHistory: conversationContext
+            };
+            const scaffoldedResponse = await this.scaffoldingSystem.processWithScaffolding(query, scaffoldingContext, relevantContent);
 
-            // Handle queries needing clarification
-            if (routingResult.clarificationNeeded) {
-                return this.handleClarificationRequest(routingResult, tokenizer);
-            }
-
-            // Get relevant content from vector store
-            const relevantContent = await this.getRelevantContent(query, routingResult);
-
-            // Format content for response
-            const formattedResponse = await this.formatResponse(
+            // 4. Response Generator
+            const generatedResponse = await this.responseGenerator.generateResponse(
+                query,
                 relevantContent,
-                routingResult,
-                tokenizer,
-                maxTokens
+                scaffoldedResponse,
+                conversationContext
             );
+
+            // 5. Format and return the response
+            const formattedResponse = this.formatResponse(generatedResponse, routeResult);
+
+            // Update conversation memory
+            this.conversationMemory.addTurn(sessionId, query, formattedResponse);
 
             return formattedResponse;
 
         } catch (error) {
-            console.error("Error in renderData:", error);
-            return this.handleError(error, tokenizer);
-        }
-    }
-
-    async getRelevantContent(query, routingResult) {
-        try {
-            // Check cache first
-            const cacheKey = this.generateCacheKey(query, routingResult);
-            if (this.responseCache.has(cacheKey)) {
-                return this.responseCache.get(cacheKey);
-            }
-
-            // Get content from vector store with topic-specific focus
-            const vectorResults = await this.vectorStore.query(query, {
-                topic: routingResult.topic,
-                subtopic: routingResult.subtopic,
-                confidence: routingResult.confidence
+            logger.loggers.app.error({
+                type: 'query_processing_error',
+                details: {
+                    query,
+                    message: error.message,
+                    stack: error.stack
+                }
             });
-
-            // Enhance results with topic-specific context
-            const enhancedResults = this.enhanceResults(vectorResults, routingResult);
-
-            // Cache results
-            this.responseCache.set(cacheKey, enhancedResults);
-            
-            return enhancedResults;
-
-        } catch (error) {
-            console.error("Error getting relevant content:", error);
-            throw error;
+            return this.handleError(error);
         }
     }
 
-    enhanceResults(vectorResults, routingResult) {
-        // Add topic-specific context and relationships
-        const enhanced = {
-            mainContent: vectorResults,
+    formatResponse(content, routingResult) {
+        const learningObjectives = this.generateLearningObjectives(routingResult.topic, routingResult.type);
+        const relatedConcepts = this.getRelatedConcepts(routingResult.topic);
+    
+        return {
             topic: routingResult.topic,
-            relatedConcepts: routingResult.relevantConcepts,
-            suggestedApproach: routingResult.suggestedApproach
+            content: content,
+            learningObjectives: learningObjectives,
+            relatedConcepts: relatedConcepts,
+            suggestedTopics: this.getTopicSuggestions(),
+            summary: this.generateSummary(content),
+            nextSteps: this.suggestNextSteps(routingResult.topic, routingResult.type)
         };
-
-        // Add topic-specific learning objectives
-        enhanced.learningObjectives = this.generateLearningObjectives(
-            routingResult.topic,
-            routingResult.type
-        );
-
-        return enhanced;
     }
-
+    
     generateLearningObjectives(topic, queryType) {
         const objectives = {
             concept_explanation: [
                 `Understand the fundamental principles of ${topic}`,
-                `Identify key components and their roles`,
-                `Explain the basic operation and function`
+                `Identify key components and their roles in ${topic}`,
+                `Explain the basic operation and function of ${topic}`
             ],
             problem_solving: [
                 `Apply ${topic} concepts to solve practical problems`,
-                `Analyze performance and efficiency considerations`,
-                `Evaluate different implementation approaches`
+                `Analyze performance and efficiency considerations in ${topic}`,
+                `Evaluate different implementation approaches for ${topic}`
             ],
             comparison: [
                 `Compare different aspects of ${topic}`,
-                `Analyze advantages and disadvantages`,
-                `Evaluate trade-offs in different scenarios`
+                `Analyze advantages and disadvantages of various ${topic} implementations`,
+                `Evaluate trade-offs in different ${topic} scenarios`
             ]
         };
-
+    
         return objectives[queryType] || objectives.concept_explanation;
     }
 
-    async formatResponse(content, routingResult, tokenizer, maxTokens) {
-        const formattedContent = `
-            Topic: ${content.topic}
-            ${content.learningObjectives.map(obj => `• ${obj}`).join('\n')}
-            
-            Relevant concepts to explore:
-            ${content.mainContent}
-            
-            Related topics to consider:
-            ${content.relatedConcepts.map(concept => `• ${concept}`).join('\n')}
-        `;
-
-        const tokenCount = tokenizer.encode(formattedContent).length;
-        
-        return {
-            output: formattedContent,
-            length: tokenCount,
-            tooLong: tokenCount > maxTokens
+    getRelatedConcepts(topic) {
+        const conceptMap = {
+            'CPU': ['Instruction Set Architecture', 'Pipelining', 'Cache'],
+            'Memory': ['Cache', 'Virtual Memory', 'RAM'],
+            'Cache': ['CPU', 'Memory Hierarchy', 'Locality of Reference'],
+            'Pipelining': ['CPU', 'Instruction Level Parallelism', 'Hazards'],
+            'Instruction Set Architecture': ['CPU', 'RISC vs CISC', 'Assembly Language']
         };
+    
+        return conceptMap[topic] || [];
+    }
+
+    suggestNextSteps(topic, queryType) {
+        const nextSteps = {
+            concept_explanation: [
+                `Explore practical applications of ${topic}`,
+                `Investigate advanced features of ${topic}`,
+                `Compare ${topic} with related concepts`
+            ],
+            problem_solving: [
+                `Analyze more complex ${topic} scenarios`,
+                `Optimize ${topic} implementations`,
+                `Explore real-world case studies involving ${topic}`
+            ],
+            comparison: [
+                `Dive deeper into specific aspects of ${topic}`,
+                `Investigate emerging trends in ${topic}`,
+                `Apply ${topic} concepts to solve practical problems`
+            ]
+        };
+    
+        return nextSteps[queryType] || nextSteps.concept_explanation;
+    }
+
+    generateSummary(content) {
+        // In a real implementation, you might use NLP techniques to summarize the content
+        // For this example, we'll just return the first sentence
+        return content.split('.')[0] + '.';
     }
 
     handleOutOfScopeQuery(routingResult, tokenizer) {
