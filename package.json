@@ -40,6 +40,7 @@
         "chromadb": "^1.9.4",
         "compute-cosine-similarity": "^1.1.0",
         "dotenv": "^16.4.7",
+        "js-tiktoken": "^1.0.16",
         "langchain": "^0.1.17",
         "natural": "^8.0.1",
         "node-cache": "^5.1.2",
