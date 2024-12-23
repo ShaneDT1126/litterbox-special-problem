@@ -26,7 +26,10 @@ class Logger {
             'conversationManager',
             'memoryIntegration',
             'memoryManager',
-            'memoryTools'
+            'memoryTools',
+            'performanceMonitor',
+            'progressiveReduction',
+            'feedbackSystem'
         ];
         const fs = require('fs');
         
@@ -58,7 +61,10 @@ class Logger {
             conversationManager: this.createComponentLogger('conversationManager'),
             memoryIntegration: this.createComponentLogger('memoryIntegration'),
             memoryManager: this.createComponentLogger('memoryManager'),
-            memoryTools: this.createComponentLogger('memoryTools')
+            memoryTools: this.createComponentLogger('memoryTools'),
+            performanceMonitor: this.createComponentLogger('performanceMonitor'),
+            progressiveReduction: this.createComponentLogger('progressiveReduction'),
+            feedbackSystem: this.createComponentLogger('feedbackSystem')
         };
     }
 
