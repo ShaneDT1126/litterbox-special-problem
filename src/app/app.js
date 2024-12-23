@@ -76,12 +76,7 @@ Remember: Your role is to support learning through structured guidance, not to p
 
 // Define storage and application
 const storage = new MemoryStorage();
-// const app = new Application({
-//   storage,
-//   ai: {
-//     planner,
-//   },
-// });
+
 
 let app;
 let myDataSource;
@@ -150,6 +145,9 @@ async function initializeSystems() {
                 // Attach message handlers
                 attachMessageHandlers();
 
+                // Start performance reporting
+                schedulePerformanceReporting();
+
                 logger.loggers.app.info({
                     type: 'system_initialization_complete',
                     details: { status: 'success', dataSourceName: DATA_SOURCE_NAME }
@@ -171,6 +169,20 @@ async function initializeSystems() {
     );
 }
 
+function schedulePerformanceReporting() {
+    const reportingInterval = 1000 * 60 * 60; // Report every hour
+
+    setInterval(() => {
+        const metrics = myDataSource.getPerformanceMetrics();
+        logger.loggers.app.info({
+            type: 'performance_report',
+            details: metrics
+        });
+
+        console.log("Performance Report:", JSON.stringify(metrics, null, 2));
+    }, reportingInterval);
+}
+
 // Message handling
 function attachMessageHandlers() {
     // Message handler
@@ -178,19 +190,24 @@ function attachMessageHandlers() {
         try {
             console.log("Received message:", context.activity.text);
 
-            if (!myDataSource || !planner) {
+            if (!myDataSource) {
                 throw new Error("MyDataSource not initialized");
             }
 
-            // Use the planner to process the message
-            const result = await planner.runAction(context);
+            const query = context.activity.text;
+            const sessionId = context.activity.conversation.id;
 
-            if (result) {
-                await context.sendActivity(MessageFactory.text(result));
-            } else {
-                // Fallback to myDataSource if planner doesn't handle it
-                const response = await myDataSource.processQuery(userQuery, sessionId);
-                await context.sendActivity(MessageFactory.text(response.content));
+            const response = await myDataSource.processQuery(query, sessionId);
+
+            await context.sendActivity(MessageFactory.text(response.content));
+
+            // Additional activities based on the response
+            if (response.suggestedTopics) {
+                await context.sendActivity(MessageFactory.text("You might also be interested in:\n" + response.suggestedTopics));
+            }
+
+            if (response.nextSteps) {
+                await context.sendActivity(MessageFactory.text("Next steps to consider:\n" + response.nextSteps.join("\n")));
             }
 
             // Increment the turn counter
@@ -218,15 +235,21 @@ function attachMessageHandlers() {
         const isPositive = feedbackType === 'positive';
         const sessionId = context.activity.conversation.id;
 
-        const updatedFeedback = await myDataSource.scaffoldingSystem.feedbackSystem.processFeedback(sessionId, isPositive);
+        await myDataSource.processFeedback(sessionId, isPositive);
         
         await context.sendActivity(MessageFactory.text(`Thank you for your ${feedbackType} feedback! It helps me improve.`));
         
         logger.loggers.app.info({
             type: 'user_feedback_received',
-            details: { sessionId, feedbackType, updatedFeedback }
+            details: { sessionId, feedbackType }
         });
 
+        await next();
+    });
+
+    app.message(/^performance report$/i, async (context, next) => {
+        const metrics = myDataSource.getPerformanceMetrics();
+        await context.sendActivity(MessageFactory.text("Current Performance Metrics:\n" + JSON.stringify(metrics, null, 2)));
         await next();
     });
 
@@ -238,6 +261,8 @@ function attachMessageHandlers() {
           }
         }
       });
+
+      
 }
 
 // Initialize the system before exporting the app

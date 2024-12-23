@@ -6,9 +6,15 @@ const ResponseGenerator = require('../components/response/responseGenerator');
 const ConversationMemory = require('../components/memory/conversationMemory');
 const routes = require('../components/router/routeDefinitions');
 const logger = require('../utils/logger');
+const FeedbackSystem = require('../components/scaffolding/feedbackSystem');
+const ProgressiveReduction = require('../components/scaffolding/progressiveReduction');
+const PerformanceMonitor = require('../components/benchmarking/performanceMonitor');
+const TokenCounter = require("../utils/tokenCounter");
+const EventEmitter = require('events');
 
-class MyDataSource {
+class MyDataSource extends EventEmitter {
     constructor(name) {
+        super();
         this.name = name;
         console.log(`MyDataSource constructed with name: ${this.name}`);
         this.documentManager = null;
@@ -17,6 +23,10 @@ class MyDataSource {
         this.scaffoldingSystem = null;
         this.responseGenerator = null;
         this.conversationMemory = null;
+        this.feedbackSystem = null;
+        this.progressiveReduction = null;
+        this.performanceMonitor = null;
+        this.tokenCounter = null;
         this.responseCache = new Map();
     }   
 
@@ -34,9 +44,26 @@ class MyDataSource {
             this.conversationMemory = new ConversationMemory();
             this.scaffoldingSystem = new ScaffoldingSystem(this.multiQueryRetriever, this.conversationMemory);
             this.responseGenerator = new ResponseGenerator();
+            this.feedbackSystem = new FeedbackSystem();
+            this.progressiveReduction = new ProgressiveReduction();
+            this.performanceMonitor = new PerformanceMonitor();
+            this.tokenCounter = new TokenCounter();
             
             // Initialize response templates
             this.initializeResponseTemplates();
+
+            // Event listeners for ScaffoldingSystem
+            this.scaffoldingSystem.on('scaffoldChunk', (chunk) => {
+                this.emit('responseChunk', chunk);
+            });
+
+            this.scaffoldingSystem.on('scaffoldComplete', (fullResponse) => {
+                this.emit('responseComplete', fullResponse);
+            });
+
+            this.scaffoldingSystem.on('scaffoldError', (errorMessage) => {
+                this.emit('responseError', errorMessage);
+            });
             
             logger.loggers.app.info({
                 type: 'datasource_initialization',
@@ -95,6 +122,7 @@ class MyDataSource {
     }
 
     async processQuery(query, sessionId) {
+        const startTime = Date.now();
         try {
             // 1. Semantic Routing
             const routeResult = await this.semanticRouter.route(query);
@@ -103,29 +131,47 @@ class MyDataSource {
             const conversationContext = this.conversationMemory.getConversationContext(sessionId);
             const relevantContent = await this.multiQueryRetriever.retrieveDocuments(query, routeResult, conversationContext);
 
-            // 3. Scaffolding System
+            // 3. Progressive Reduction
+            const feedback = await this.feedbackSystem.getFeedback(sessionId);
+            const reductionLevel = this.progressiveReduction.determineReductionLevel(sessionId, feedback);
+            const reducedContent = this.progressiveReduction.applyReduction(relevantContent, reductionLevel);
+
+            // 4. Scaffolding System that includes response generation
             const scaffoldingContext = {
                 sessionId: sessionId,
                 query: query,
                 routingResult: routeResult,
                 currentTurn: this.conversationMemory.getTurnCount(sessionId),
-                conversationHistory: conversationContext
+                conversationHistory: conversationContext,
+                reductionLevel: reductionLevel
             };
-            const scaffoldedResponse = await this.scaffoldingSystem.processWithScaffolding(query, scaffoldingContext, relevantContent);
+            const scaffoldedResponse = await this.scaffoldingSystem.processWithScaffolding(query, scaffoldingContext, reducedContent);
 
-            // 4. Response Generator
-            const generatedResponse = await this.responseGenerator.generateResponse(
-                query,
-                relevantContent,
-                scaffoldedResponse,
-                conversationContext
-            );
+            const scaffoldedResponseTokens = this.tokenCounter.countTokens(JSON.stringify(scaffoldedResponse));
+            logger.loggers.app.info({
+                type: 'scaffolded_response_tokens',
+                details: { 
+                    sessionId, 
+                    scaffoldedResponseTokens 
+                }
+            });
 
             // 5. Format and return the response
-            const formattedResponse = this.formatResponse(generatedResponse, routeResult);
+            const formattedResponse = this.formatResponse(scaffoldedResponse, routeResult);
 
             // Update conversation memory
             this.conversationMemory.addTurn(sessionId, query, formattedResponse);
+
+             // Record performance metrics
+            const endTime = Date.now();
+            const responseTime = endTime - startTime;
+            this.performanceMonitor.recordQuery({
+                responseTime,
+                successful: true,
+                cacheHit: false, // Implement cache checking if needed
+                topic: routeResult.topic,
+                tokenCount: scaffoldedResponseTokens
+            });
 
             return formattedResponse;
 
@@ -138,11 +184,22 @@ class MyDataSource {
                     stack: error.stack
                 }
             });
+
+            // Record error in performance metrics
+            this.performanceMonitor.recordQuery({
+                responseTime: Date.now() - startTime,
+                successful: false,
+                error: error.message,
+            });
+
             return this.handleError(error);
         }
     }
 
-    formatResponse(content, routingResult) {
+    formatResponse(scaffoldedResponse, routingResult) {
+        // Extract the content from the scaffoldedResponse
+        const content = scaffoldedResponse.message || '';
+    
         const learningObjectives = this.generateLearningObjectives(routingResult.topic, routingResult.type);
         const relatedConcepts = this.getRelatedConcepts(routingResult.topic);
     
@@ -153,7 +210,12 @@ class MyDataSource {
             relatedConcepts: relatedConcepts,
             suggestedTopics: this.getTopicSuggestions(),
             summary: this.generateSummary(content),
-            nextSteps: this.suggestNextSteps(routingResult.topic, routingResult.type)
+            nextSteps: this.suggestNextSteps(routingResult.topic, routingResult.type),
+            // Include additional fields from scaffoldedResponse
+            type: scaffoldedResponse.type,
+            supportLevel: scaffoldedResponse.supportLevel,
+            reductionLevel: scaffoldedResponse.reductionLevel,
+            metadata: scaffoldedResponse.metadata
         };
     }
     
@@ -214,9 +276,17 @@ class MyDataSource {
     }
 
     generateSummary(content) {
-        // In a real implementation, you might use NLP techniques to summarize the content
-        // For this example, we'll just return the first sentence
-        return content.split('.')[0] + '.';
+        if (typeof content !== 'string') {
+            return '';
+        }
+    
+        // Split the content into sentences
+        const sentences = content.split(/[.!?]+/);
+    
+        // Take the first sentence as a summary
+        const summary = sentences[0] ? sentences[0].trim() + '.' : '';
+    
+        return summary;
     }
 
     handleOutOfScopeQuery(routingResult, tokenizer) {
@@ -271,6 +341,20 @@ class MyDataSource {
 
     generateCacheKey(query, routingResult) {
         return `${query}_${routingResult.topic}_${routingResult.type}`.toLowerCase();
+    }
+
+    async processFeedback(sessionId, isPositive) {
+        await this.feedbackSystem.processFeedback(sessionId, isPositive);
+        this.performanceMonitor.recordFeedback(isPositive);
+        
+        logger.loggers.app.info({
+            type: 'user_feedback_processed',
+            details: { sessionId, isPositive }
+        });
+    }
+
+    getPerformanceMetrics() {
+        return this.performanceMonitor.getMetricsSummary();
     }
 }
 
