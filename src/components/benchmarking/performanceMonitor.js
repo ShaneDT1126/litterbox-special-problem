@@ -3,229 +3,118 @@ const logger = require('../../utils/logger');
 class PerformanceMonitor {
     constructor() {
         this.metrics = {
-            rag: new Map(),      // RAG system metrics
-            memory: new Map(),   // Memory system metrics
-            scaffold: new Map(), // Scaffolding system metrics
-            overall: new Map()   // Overall system metrics
-        };
-
-        this.thresholds = {
-            queryTime: 2000,     // Maximum query time (ms)
-            memoryUsage: 512,    // Maximum memory usage (MB)
-            responseTime: 3000   // Maximum response time (ms)
-        };
-    }
-
-    async measurePerformance(operation, category, callback) {
-        const startTime = process.hrtime.bigint();
-        const startMemory = process.memoryUsage();
-
-        try {
-            // Execute the operation
-            const result = await callback();
-
-            // Calculate metrics
-            const metrics = this._calculateMetrics(
-                startTime,
-                startMemory,
-                category,
-                operation
-            );
-
-            // Store metrics
-            this._storeMetrics(metrics, category, operation);
-
-            logger.loggers.performance.info({
-                type: 'performance_measured',
-                details: {
-                    category,
-                    operation,
-                    metrics
-                }
-            });
-
-            return {
-                result,
-                metrics
-            };
-        } catch (error) {
-            logger.loggers.performance.error({
-                type: 'performance_measurement_error',
-                details: {
-                    category,
-                    operation,
-                    message: error.message,
-                    stack: error.stack
-                }
-            });
-            throw error;
-        }
-    }
-
-    _calculateMetrics(startTime, startMemory, category, operation) {
-        const endTime = process.hrtime.bigint();
-        const endMemory = process.memoryUsage();
-
-        return {
-            executionTime: Number(endTime - startTime) / 1_000_000, // Convert to ms
-            memoryUsage: {
-                heapUsed: endMemory.heapUsed - startMemory.heapUsed,
-                heapTotal: endMemory.heapTotal - startMemory.heapTotal,
-                external: endMemory.external - startMemory.external,
-                rss: endMemory.rss - startMemory.rss
+            totalQueries: 0,
+            successfulQueries: 0,
+            averageResponseTime: 0,
+            totalResponseTime: 0,
+            apiCalls: 0,
+            cacheHits: 0,
+            errorCount: 0,
+            feedbackStats: {
+                positive: 0,
+                negative: 0
             },
-            timestamp: new Date().toISOString(),
-            category,
-            operation
+            topicDistribution: {},
+            totalTokens: 0,
+            averageTokensPerQuery: 0
         };
     }
 
-    _storeMetrics(metrics, category, operation) {
-        const key = `${category}:${operation}`;
-        
-        // Store in specific category
-        if (!this.metrics[category].has(operation)) {
-            this.metrics[category].set(operation, []);
-        }
-        this.metrics[category].get(operation).push(metrics);
+    recordQuery(queryData) {
+        this.metrics.totalQueries++;
+        this.metrics.totalResponseTime += queryData.responseTime;
+        this.metrics.averageResponseTime = this.metrics.totalResponseTime / this.metrics.totalQueries;
 
-        // Store in overall metrics
-        if (!this.metrics.overall.has(key)) {
-            this.metrics.overall.set(key, []);
+        if (queryData.successful) {
+            this.metrics.successfulQueries++;
+        } else {
+            this.metrics.errorCount++;
         }
-        this.metrics.overall.get(key).push(metrics);
 
-        // Maintain only last 100 metrics
-        if (this.metrics[category].get(operation).length > 100) {
-            this.metrics[category].get(operation).shift();
+        if (queryData.cacheHit) {
+            this.metrics.cacheHits++;
+        } else {
+            this.metrics.apiCalls++;
         }
-        if (this.metrics.overall.get(key).length > 100) {
-            this.metrics.overall.get(key).shift();
-        }
-    }
 
-    getMetrics(category, operation = null) {
-        try {
-            if (operation) {
-                return this.metrics[category].get(operation) || [];
+        this.metrics.topicDistribution[queryData.topic] = (this.metrics.topicDistribution[queryData.topic] || 0) + 1;
+
+        if (queryData.tokenCount) {
+            this.metrics.totalTokens += queryData.tokenCount;
+            this.metrics.averageTokensPerQuery = this.metrics.totalTokens / this.metrics.totalQueries;
+        }
+
+        logger.loggers.performanceMonitor.info({
+            type: 'query_recorded',
+            details: {
+                queryData,
+                currentMetrics: this.getMetricsSummary()
             }
-            return Array.from(this.metrics[category].values()).flat();
-        } catch (error) {
-            logger.loggers.performance.error({
-                type: 'get_metrics_error',
-                details: {
-                    category,
-                    operation,
-                    message: error.message,
-                    stack: error.stack
-                }
-            });
-            throw error;
-        }
+        });
     }
 
-    analyzePerformance(category, operation = null) {
-        try {
-            const metrics = this.getMetrics(category, operation);
-            
-            if (metrics.length === 0) {
-                return null;
+    recordFeedback(isPositive) {
+        if (isPositive) {
+            this.metrics.feedbackStats.positive++;
+        } else {
+            this.metrics.feedbackStats.negative++;
+        }
+
+        logger.loggers.performanceMonitor.info({
+            type: 'feedback_recorded',
+            details: {
+                isPositive,
+                currentFeedbackStats: this.metrics.feedbackStats
             }
-
-            const analysis = {
-                averageExecutionTime: this._calculateAverage(metrics, 'executionTime'),
-                averageMemoryUsage: this._calculateAverageMemoryUsage(metrics),
-                percentiles: this._calculatePercentiles(metrics),
-                thresholdViolations: this._checkThresholdViolations(metrics),
-                recommendations: []
-            };
-
-            // Generate recommendations
-            analysis.recommendations = this._generateRecommendations(analysis);
-
-            logger.loggers.performance.info({
-                type: 'performance_analyzed',
-                details: {
-                    category,
-                    operation,
-                    analysis
-                }
-            });
-
-            return analysis;
-        } catch (error) {
-            logger.loggers.performance.error({
-                type: 'performance_analysis_error',
-                details: {
-                    category,
-                    operation,
-                    message: error.message,
-                    stack: error.stack
-                }
-            });
-            throw error;
-        }
+        });
     }
 
-    _calculateAverage(metrics, field) {
-        const sum = metrics.reduce((acc, metric) => acc + metric[field], 0);
-        return sum / metrics.length;
-    }
+    getMetricsSummary() {
+        const totalFeedback = this.metrics.feedbackStats.positive + this.metrics.feedbackStats.negative;
+        const satisfactionRate = totalFeedback > 0 
+            ? (this.metrics.feedbackStats.positive / totalFeedback) * 100 
+            : 0;
 
-    _calculateAverageMemoryUsage(metrics) {
         return {
-            heapUsed: this._calculateAverage(metrics, 'memoryUsage.heapUsed'),
-            heapTotal: this._calculateAverage(metrics, 'memoryUsage.heapTotal'),
-            external: this._calculateAverage(metrics, 'memoryUsage.external'),
-            rss: this._calculateAverage(metrics, 'memoryUsage.rss')
+            totalQueries: this.metrics.totalQueries,
+            successRate: (this.metrics.successfulQueries / this.metrics.totalQueries) * 100,
+            averageResponseTime: this.metrics.averageResponseTime,
+            cacheHitRate: (this.metrics.cacheHits / this.metrics.totalQueries) * 100,
+            errorRate: (this.metrics.errorCount / this.metrics.totalQueries) * 100,
+            satisfactionRate: satisfactionRate,
+            topTopics: this.getTopTopics(5),
+            averageTokensPerQuery: this.metrics.averageTokensPerQuery,
+            totalTokens: this.metrics.totalTokens
         };
     }
 
-    _calculatePercentiles(metrics) {
-        const sortedTimes = metrics
-            .map(m => m.executionTime)
-            .sort((a, b) => a - b);
+    getTopTopics(n) {
+        return Object.entries(this.metrics.topicDistribution)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, n)
+            .map(([topic, count]) => ({ topic, count }));
+    }
 
-        return {
-            p50: this._getPercentile(sortedTimes, 50),
-            p75: this._getPercentile(sortedTimes, 75),
-            p90: this._getPercentile(sortedTimes, 90),
-            p95: this._getPercentile(sortedTimes, 95)
+    resetMetrics() {
+        this.metrics = {
+            totalQueries: 0,
+            successfulQueries: 0,
+            averageResponseTime: 0,
+            totalResponseTime: 0,
+            apiCalls: 0,
+            cacheHits: 0,
+            errorCount: 0,
+            feedbackStats: {
+                positive: 0,
+                negative: 0
+            },
+            topicDistribution: {}
         };
-    }
 
-    _getPercentile(sortedValues, percentile) {
-        const index = Math.ceil((percentile / 100) * sortedValues.length) - 1;
-        return sortedValues[index];
-    }
-
-    _checkThresholdViolations(metrics) {
-        return {
-            queryTime: metrics.filter(m => m.executionTime > this.thresholds.queryTime).length,
-            memoryUsage: metrics.filter(m => m.memoryUsage.heapUsed > this.thresholds.memoryUsage * 1024 * 1024).length,
-            responseTime: metrics.filter(m => m.executionTime > this.thresholds.responseTime).length
-        };
-    }
-
-    _generateRecommendations(analysis) {
-        const recommendations = [];
-
-        // Check execution time
-        if (analysis.averageExecutionTime > this.thresholds.queryTime * 0.8) {
-            recommendations.push('Consider optimizing query execution time');
-        }
-
-        // Check memory usage
-        if (analysis.averageMemoryUsage.heapUsed > this.thresholds.memoryUsage * 1024 * 1024 * 0.8) {
-            recommendations.push('Memory usage is approaching threshold, consider optimization');
-        }
-
-        // Check percentiles
-        if (analysis.percentiles.p95 > this.thresholds.responseTime) {
-            recommendations.push('95th percentile response time exceeds threshold');
-        }
-
-        return recommendations;
+        logger.loggers.performanceMonitor.info({
+            type: 'metrics_reset',
+            details: 'All performance metrics have been reset to initial values.'
+        });
     }
 }
 
