@@ -1,32 +1,40 @@
-const natural = require('natural');
 const logger = require('../../utils/logger');
-const TfIdf = natural.TfIdf;
 
 class ProgressiveReduction {
     constructor() {
-        this.reductionLevels = ['none', 'low', 'medium', 'high'];
-        this.tokenizer = new natural.WordTokenizer();
+        this.reductionLevels = {
+            NONE: 'none',
+            LOW: 'low',
+            MEDIUM: 'medium',
+            HIGH: 'high'
+        };
+
+        this.performanceThresholds = {
+            low: 0.3,
+            medium: 0.6,
+            high: 0.8
+        };
     }
 
     determineReductionLevel(sessionId, feedback) {
-        const { positiveCount, negativeCount } = feedback;
-        const totalFeedback = positiveCount + negativeCount;
-        const positiveRatio = totalFeedback > 0 ? positiveCount / totalFeedback : 0;
+        const performance = this._calculatePerformance(feedback);
+        const interactionCount = feedback.totalInteractions;
 
-        let reductionLevel;
-        if (totalFeedback < 5) {
-            reductionLevel = 'none';
-        } else if (positiveRatio > 0.8) {
-            reductionLevel = 'high';
-        } else if (positiveRatio > 0.6) {
-            reductionLevel = 'medium';
-        } else {
-            reductionLevel = 'low';
+        let reductionLevel = this.reductionLevels.NONE;
+
+        if (interactionCount > 5) {
+            if (performance >= this.performanceThresholds.high) {
+                reductionLevel = this.reductionLevels.HIGH;
+            } else if (performance >= this.performanceThresholds.medium) {
+                reductionLevel = this.reductionLevels.MEDIUM;
+            } else if (performance >= this.performanceThresholds.low) {
+                reductionLevel = this.reductionLevels.LOW;
+            }
         }
 
-        logger.loggers.scaffolding.info({
+        logger.loggers.progressiveReduction.info({
             type: 'reduction_level_determined',
-            details: { sessionId, feedback, reductionLevel }
+            details: { sessionId, performance, interactionCount, reductionLevel }
         });
 
         return reductionLevel;
@@ -34,70 +42,106 @@ class ProgressiveReduction {
 
     applyReduction(content, reductionLevel) {
         switch (reductionLevel) {
-            case 'high':
+            case this.reductionLevels.HIGH:
                 return this._highReduction(content);
-            case 'medium':
+            case this.reductionLevels.MEDIUM:
                 return this._mediumReduction(content);
-            case 'low':
+            case this.reductionLevels.LOW:
                 return this._lowReduction(content);
             default:
                 return content;
         }
     }
 
+    _calculatePerformance(feedback) {
+        if (feedback.totalInteractions === 0) {
+            return 0;
+        }
+        return feedback.positiveCount / feedback.totalInteractions;
+    }
+
     _highReduction(content) {
-        const sentences = this._splitIntoSentences(content);
-        const importantSentences = this._getImportantSentences(sentences, 0.3);
-        return this._reconstructContent(importantSentences);
+        if (typeof content === 'string') {
+            // For strings, keep only the first quarter
+            return content.slice(0, Math.max(1, Math.floor(content.length / 4)));
+        } else if (Array.isArray(content)) {
+            // For arrays (e.g., of sentences or paragraphs), keep only the first and last items
+            return content.length <= 2 ? content : [content[0], content[content.length - 1]];
+        }
+        return content; // If it's neither string nor array, return as is
     }
 
     _mediumReduction(content) {
-        const sentences = this._splitIntoSentences(content);
-        const importantSentences = this._getImportantSentences(sentences, 0.6);
-        return this._reconstructContent(importantSentences);
+        if (typeof content === 'string') {
+            // For strings, keep the first half
+            return content.slice(0, Math.max(1, Math.floor(content.length / 2)));
+        } else if (Array.isArray(content)) {
+            // For arrays, keep every other item
+            return content.filter((_, index) => index % 2 === 0);
+        }
+        return content;
     }
 
     _lowReduction(content) {
-        const sentences = this._splitIntoSentences(content);
-        const importantSentences = this._getImportantSentences(sentences, 0.8);
-        return this._reconstructContent(importantSentences);
+        if (typeof content === 'string') {
+            // For strings, keep three quarters
+            return content.slice(0, Math.max(1, Math.floor(content.length * 3 / 4)));
+        } else if (Array.isArray(content)) {
+            // For arrays, remove only the last quarter of items
+            const cutoff = Math.floor(content.length * 3 / 4);
+            return content.slice(0, Math.max(1, cutoff));
+        }
+        return content;
     }
 
-    _getImportantSentences(sentences, percentage) {
-        const tfidf = new TfIdf();
+    applyReduction(content, reductionLevel) {
+        let reducedContent;
+        switch (reductionLevel) {
+            case this.reductionLevels.HIGH:
+                reducedContent = this._highReduction(content);
+                break;
+            case this.reductionLevels.MEDIUM:
+                reducedContent = this._mediumReduction(content);
+                break;
+            case this.reductionLevels.LOW:
+                reducedContent = this._lowReduction(content);
+                break;
+            default:
+                reducedContent = content;
+        }
 
-        // Add each sentence to the TF-IDF model
-        sentences.forEach(sentence => tfidf.addDocument(sentence));
-
-        // Calculate importance scores for each sentence
-        const sentenceScores = sentences.map((sentence, index) => {
-            const words = this.tokenizer.tokenize(sentence);
-            const score = words.reduce((sum, word) => sum + tfidf.tfidf(word, index), 0);
-            return { sentence, score, index };
+        logger.loggers.progressiveReduction.info({
+            type: 'content_reduced',
+            details: { 
+                reductionLevel, 
+                originalLength: this._getContentLength(content),
+                reducedLength: this._getContentLength(reducedContent)
+            }
         });
 
-        // Sort sentences by importance score
-        sentenceScores.sort((a, b) => b.score - a.score);
-
-        // Select top percentage of sentences
-        const numSentences = Math.ceil(sentences.length * percentage);
-        return sentenceScores.slice(0, numSentences);
+        return reducedContent;
     }
 
-    _reconstructContent(importantSentences) {
-        // Sort sentences back to their original order
-        importantSentences.sort((a, b) => a.index - b.index);
-
-        return importantSentences.map(item => item.sentence).join(' ');
+    _getContentLength(content) {
+        if (typeof content === 'string') {
+            return content.length;
+        } else if (Array.isArray(content)) {
+            return content.length;
+        }
+        return 0; // If it's neither string nor array, return 0
     }
 
-    _splitIntoSentences(content) {
-        return content.match(/[^\.!\?]+[\.!\?]+/g) || [];
-    }
+    adjustReductionBasedOnFeedback(currentReductionLevel, isPositiveFeedback) {
+        const levels = Object.values(this.reductionLevels);
+        const currentIndex = levels.indexOf(currentReductionLevel);
 
-    _selectSentences(sentences, percentage) {
-        const numSentences = Math.max(1, Math.ceil(sentences.length * percentage));
-        return sentences.slice(0, numSentences).join(' ');
+        if (isPositiveFeedback && currentIndex < levels.length - 1) {
+            return levels[currentIndex + 1];
+        } else if (!isPositiveFeedback && currentIndex > 0) {
+            return levels[currentIndex - 1];
+        }
+
+        return currentReductionLevel;
     }
 }
 
