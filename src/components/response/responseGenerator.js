@@ -8,22 +8,47 @@ const EventEmitter = require('events');
 class ResponseGenerator extends EventEmitter {
     constructor() {
         super();
-        console.log("OpenAI API Key available:", !!process.env.SECRET_OPENAI_API_KEY);
-        
         this.openai = new OpenAI({
             apiKey: process.env.SECRET_OPENAI_API_KEY
         });
 
-        this.cache = new NodeCache({ stdTTL: 3600 }); // Cache responses for 1 hour
-
+        this.cache = new NodeCache({ stdTTL: 3600 });
         this.tokenCounter = new TokenCounter();
         this.contextSummarizer = new ContextSummarizer();
 
         this.MAX_TOKENS = 4096;
-        this.MAX_RESPONSE_TOKENS = 500; // Maximum tokens for the response
+        this.MAX_RESPONSE_TOKENS = 500;
     }
 
-    async generateResponse(query, relevantContent, scaffoldingContext, conversationHistory) {
+    _constructGuidingPrompt(query, relevantContent, scaffoldingContext) {
+        return `Student's question: "${query}"
+        
+        Scaffolding Guidelines:
+        1. PROVIDE a clear learning framework
+        2. STRUCTURE the content into progressive levels
+        3. OFFER temporary supports that can be gradually removed
+        4. INCLUDE worked examples with gaps for student engagement
+        5. USE concept bridging to connect prior knowledge
+        
+        Response Structure:
+        1. Start with a simplified version or model
+        2. Provide partial worked examples
+        3. Include strategic hints at key decision points
+        4. Gradually increase complexity
+        5. Build connections to previous concepts
+        
+        IMPORTANT:
+        - Focus on building supporting structures
+        - Provide progressive complexity levels
+        - Include strategic hints at key points
+        - Use worked examples with gaps
+        - Connect to prior knowledge
+        
+        Relevant technical concepts: ${relevantContent.join(' ')}
+        Current scaffolding context: ${JSON.stringify(scaffoldingContext)}`;
+    }
+
+    async generateGuidingResponse(query, relevantContent, scaffoldingContext, conversationHistory) {
         try {
             const cacheKey = this._generateCacheKey(query, scaffoldingContext);
             const cachedResponse = this.cache.get(cacheKey);
@@ -37,32 +62,24 @@ class ResponseGenerator extends EventEmitter {
                 return cachedResponse;
             }
 
-            const summarizedContext = this.contextSummarizer.summarizeContext(conversationHistory);
-            const messages = this._constructMessages(query, relevantContent, scaffoldingContext, summarizedContext);
-            const tokenCount = this.tokenCounter.countMessageTokens(messages);
-
-            logger.loggers.responseGenerator.info({
-                type: 'token_count',
-                details: { 
-                    inputTokenCount: tokenCount, 
-                    maxTokens: this.MAX_TOKENS,
-                    maxResponseTokens: this.MAX_RESPONSE_TOKENS
-                }
-            });
-
-            if (tokenCount > this.MAX_TOKENS - this.MAX_RESPONSE_TOKENS) {
-                messages = this._truncateMessages(messages);
-                const newTokenCount = this.tokenCounter.countMessageTokens(messages);
-                logger.loggers.responseGenerator.info({
-                    type: 'messages_truncated',
-                    details: { originalTokenCount: tokenCount, newTokenCount }
-                });
-            }
+            const summarizedContext = await this.contextSummarizer.summarizeContext(conversationHistory);
+            const prompt = this._constructGuidingPrompt(query, relevantContent, scaffoldingContext);
             
+            const messages = [
+                { 
+                    role: "system", 
+                    content: this._getSystemPrompt()
+                },
+                { 
+                    role: "user", 
+                    content: prompt 
+                }
+            ];
+
             const stream = await this.openai.chat.completions.create({
                 model: "gpt-3.5-turbo",
                 messages: messages,
-                max_tokens: Math.min(this.MAX_RESPONSE_TOKENS, this.MAX_TOKENS - tokenCount),
+                max_tokens: this.MAX_RESPONSE_TOKENS,
                 temperature: 0.7,
                 stream: true,
             });
@@ -80,22 +97,19 @@ class ResponseGenerator extends EventEmitter {
                 throw new Error("Invalid response from OpenAI API");
             }
 
+            // Ensure response is in question format
+            if (!this._isInQuestionFormat(generatedResponse)) {
+                generatedResponse = this._reformatToQuestions(generatedResponse);
+            }
+
             this.cache.set(cacheKey, generatedResponse);
 
-            const responseTokenCount = this.tokenCounter.countTokens(generatedResponse);
-            logger.loggers.responseGenerator.info({
-                type: 'response_generated',
-                details: { 
-                    query, 
-                    responseLength: generatedResponse.length, 
-                    inputTokenCount: tokenCount,
-                    responseTokenCount,
-                    totalTokenCount: tokenCount + responseTokenCount
-                }
-            });
-
-            this.emit('responseComplete', generatedResponse);
-            return generatedResponse;
+            return {
+                type: 'guided',
+                content: generatedResponse,
+                requiresFollowUp: true,
+                tokenCount: this.tokenCounter.countTokens(generatedResponse)
+            };
 
         } catch (error) {
             logger.loggers.responseGenerator.error({
@@ -106,112 +120,100 @@ class ResponseGenerator extends EventEmitter {
                     stack: error.stack
                 }
             });
-            const errorMessage = "I apologize, but I'm having trouble generating a response at the moment. Could you please try again or rephrase your question?";
-            this.emit('responseError', errorMessage);
-            return "I apologize, but I'm having trouble generating a response at the moment. Could you please try again or rephrase your question?";
+            throw error;
         }
     }
 
-    _generateCacheKey(query, scaffoldingContext) {
-        // Generate a unique key based on the query and context
-        return `${query}_${JSON.stringify(scaffoldingContext)}`;
-    }
-
-    _constructMessages(query, relevantContent, scaffoldingContext, conversationHistory) {
-        const systemMessage = { role: "system", content: this._getSystemMessage() };
-        const userMessage = { role: "user", content: this._constructPrompt(query, relevantContent, scaffoldingContext) };
+    _getSystemPrompt() {
+        return `You are a computer architecture tutor using scaffolding techniques:
+    
+        SCAFFOLDING PRINCIPLES:
+        1. Provide clear structure and frameworks
+        2. Use progressive complexity levels
+        3. Offer temporary supports
+        4. Include partially worked examples
+        5. Build on prior knowledge
         
-        const historyMessages = this._truncateConversationHistory(conversationHistory)
-            .map(turn => [
-                { role: "user", content: turn.userQuery },
-                { role: "assistant", content: turn.botResponse }
-            ]).flat();
-
-        return [systemMessage, ...historyMessages, userMessage];
+        RESPONSE STRUCTURE:
+        1. Start with a simplified model/framework
+        2. Show a partial solution or worked example
+        3. Highlight key decision points
+        4. Provide strategic hints
+        5. Connect to previous concepts
+        
+        INCLUDE:
+        - Framework structures
+        - Partial examples
+        - Strategic hints
+        - Progressive complexity
+        - Knowledge bridges
+        
+        AVOID:
+        - Pure Socratic questioning
+        - Complete solutions
+        - Direct answers
+        - Overwhelming complexity`;
     }
 
-    _constructPrompt(query, relevantContent, scaffoldingContext) {
-        const contentSummary = relevantContent ? relevantContent.join('\n\n') : '';
-        return `
-User Query: ${query}
-Relevant Info: ${contentSummary}
-Scaffolding Context: ${JSON.stringify(scaffoldingContext)}
-`;
+    _isInQuestionFormat(content) {
+        const questionCount = (content.match(/\?/g) || []).length;
+        const hasThinkingPrompts = content.includes("think about") || 
+                                 content.includes("consider") || 
+                                 content.includes("what if");
+        return questionCount >= 2 && hasThinkingPrompts;
     }
 
-    _truncateConversationHistory(history) {
-        let tokenCount = 0;
-        let truncatedHistory = [];
-
-        for (let i = history.length - 1; i >= 0; i--) {
-            const turn = history[i];
-            const turnTokens = this.tokenCounter.countTokens(turn.userQuery) + this.tokenCounter.countTokens(turn.botResponse);
+    _reformatToQuestions(content) {
+        let questions = "Let's think about this step by step:\n\n";
+        
+        const sentences = content.split(/[.!?]+/).filter(s => s.trim());
+        
+        sentences.forEach((sentence, index) => {
+            sentence = sentence.trim();
+            if (!sentence) return;
             
-            if (tokenCount + turnTokens > 2000) { // Adjust this value as needed
-                break;
+            if (sentence.endsWith('?')) {
+                questions += `${sentence}?\n`;
+                return;
             }
 
-            tokenCount += turnTokens;
-            truncatedHistory.unshift(turn);
-        }
-
-        return truncatedHistory;
-    }
-
-    _truncateMessages(messages) {
-        while (this.tokenCounter.countMessageTokens(messages) > this.MAX_TOKENS - this.MAX_RESPONSE_TOKENS) {
-            if (messages.length <= 2) { // Keep system message and user query
-                break;
+            if (index === 0) {
+                questions += `What do you think about ${sentence.toLowerCase()}?\n`;
+            } else if (sentence.includes('because') || sentence.includes('due to')) {
+                questions += `Why do you think this happens?\n`;
+            } else if (sentence.includes('is') || sentence.includes('are')) {
+                questions += `How would you explain ${sentence.toLowerCase()}?\n`;
+            } else {
+                questions += `What might happen if we consider ${sentence.toLowerCase()}?\n`;
             }
-            messages.splice(1, 1); // Remove the oldest message after system message
-        }
-        return messages;
+        });
+
+        questions += "\nHint: Consider the key technical concepts involved.\n";
+        questions += "\nWhat connections do you see between these ideas?\n";
+        
+        return questions;
     }
 
-    _estimateTokens(text) {
-        // Implement a simple token estimation function
-        return text.split(/\s+/).length;
+    _generateCacheKey(query, context) {
+        const normalizedQuery = query.toLowerCase().trim();
+        const contextHash = JSON.stringify(context);
+        return `response_${normalizedQuery}_${contextHash}`;
     }
 
-    _getSystemMessage() {
-        return `You are a Computer Architecture tutor focused ONLY on teaching computer organization and architecture concepts using a scaffolding approach.
+    async generateErrorResponse(error) {
+        logger.loggers.responseGenerator.error({
+            type: 'error_response_generation',
+            details: {
+                error: error.message,
+                stack: error.stack
+            }
+        });
 
-CORE PRINCIPLES:
-- NEVER provide direct answers
-- ONLY address Computer Architecture topics
-- For non-Computer Architecture questions, politely redirect users to ask about computer hardware, processors, memory systems, or related topics
-
-TEACHING APPROACH:
-1. Support Level Assessment:
-   - Assess student's current understanding
-   - Identify knowledge gaps
-   - Adjust support level accordingly
-
-2. Scaffolding Techniques:
-   - Break complex concepts into manageable parts
-   - Provide structured guidance
-   - Use conceptual scaffolds for theoretical understanding
-   - Use procedural scaffolds for step-by-step processes
-   - Gradually reduce support as understanding improves
-
-3. Learning Support:
-   - Use analogies and examples to build on existing knowledge
-   - Provide hints and cues instead of answers
-   - Guide students through problem-solving processes
-   - Encourage self-discovery and critical thinking
-
-4. Knowledge Construction:
-   - Help students build mental models
-   - Connect new concepts to previously learned material
-   - Validate understanding through guided questions
-   - Support progressive concept development
-
-RESPONSE STRUCTURE:
-1. First: Assess current understanding
-2. Then: Provide appropriate scaffolding
-3. Finally: Guide towards self-discovery
-
-Remember: Your role is to support learning through structured guidance, not to provide direct answers.`;
+        return {
+            type: 'error',
+            content: "I apologize, but I encountered an error. Could you please rephrase your question? Remember, I'm here to guide you through understanding computer architecture concepts.",
+            requiresFollowUp: true
+        };
     }
 }
 
