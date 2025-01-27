@@ -127,25 +127,15 @@ class MyDataSource extends EventEmitter {
             // 1. Semantic Routing
             const routeResult = await this.semanticRouter.route(query);
 
-            // 2. Multi-Query RAG
-            const conversationContext = this.conversationMemory.getConversationContext(sessionId);
-            const relevantContent = await this.multiQueryRetriever.retrieveDocuments(query, routeResult, conversationContext);
-
-            // 3. Progressive Reduction
-            const feedback = await this.feedbackSystem.getFeedback(sessionId);
-            const reductionLevel = this.progressiveReduction.determineReductionLevel(sessionId, feedback);
-            const reducedContent = this.progressiveReduction.applyReduction(relevantContent, reductionLevel);
-
-            // 4. Scaffolding System that includes response generation
+            // 2. Scaffolding System that includes multi-query retrieval, progressive reduction, and response generation
             const scaffoldingContext = {
                 sessionId: sessionId,
-                query: query,
                 routingResult: routeResult,
-                currentTurn: this.conversationMemory.getTurnCount(sessionId),
-                conversationHistory: conversationContext,
-                reductionLevel: reductionLevel
+                currentSupportLevel: this.feedbackSystem.getFeedbackRatio(sessionId) > 0.5 ? 'low' : 'high',
+                topics: []
             };
-            const scaffoldedResponse = await this.scaffoldingSystem.processWithScaffolding(query, scaffoldingContext, reducedContent);
+            
+            const scaffoldedResponse = await this.scaffoldingSystem.processWithScaffolding(query, scaffoldingContext);
 
             const scaffoldedResponseTokens = this.tokenCounter.countTokens(JSON.stringify(scaffoldedResponse));
             logger.loggers.app.info({
@@ -156,19 +146,16 @@ class MyDataSource extends EventEmitter {
                 }
             });
 
-            // 5. Format and return the response
+            // 3. Format and return the response
             const formattedResponse = this.formatResponse(scaffoldedResponse, routeResult);
 
-            // Update conversation memory
-            this.conversationMemory.addTurn(sessionId, query, formattedResponse);
-
-             // Record performance metrics
+            // Record performance metrics
             const endTime = Date.now();
             const responseTime = endTime - startTime;
             this.performanceMonitor.recordQuery({
                 responseTime,
                 successful: true,
-                cacheHit: false, // Implement cache checking if needed
+                cacheHit: false,
                 topic: routeResult.topic,
                 tokenCount: scaffoldedResponseTokens
             });
@@ -197,7 +184,6 @@ class MyDataSource extends EventEmitter {
     }
 
     formatResponse(scaffoldedResponse, routingResult) {
-        // Extract the content from the scaffoldedResponse
         const content = scaffoldedResponse.message || '';
     
         const learningObjectives = this.generateLearningObjectives(routingResult.topic, routingResult.type);
@@ -211,11 +197,9 @@ class MyDataSource extends EventEmitter {
             suggestedTopics: this.getTopicSuggestions(),
             summary: this.generateSummary(content),
             nextSteps: this.suggestNextSteps(routingResult.topic, routingResult.type),
-            // Include additional fields from scaffoldedResponse
-            type: scaffoldedResponse.type,
-            supportLevel: scaffoldedResponse.supportLevel,
-            reductionLevel: scaffoldedResponse.reductionLevel,
-            metadata: scaffoldedResponse.metadata
+            scaffoldingContext: scaffoldedResponse.scaffoldingContext,
+            conversationSummary: scaffoldedResponse.conversationSummary,
+            topicClassification: scaffoldedResponse.topicClassification
         };
     }
     
@@ -317,16 +301,21 @@ class MyDataSource extends EventEmitter {
         };
     }
 
-    handleError(error, tokenizer) {
-        const response = error.technical ?
-            this.responseTemplates.error.technical :
-            this.responseTemplates.error.default;
-
-        return {
+    handleError(error) {
+        return this.responseGenerator.generateGuidingResponse(
+            "Error handling query",
+            [],
+            { supportLevel: 'high', reductionLevel: 'none' },
+            []
+        ).then(response => ({
             output: response,
-            length: tokenizer.encode(response).length,
+            length: this.tokenCounter.countTokens(response),
             tooLong: false
-        };
+        })).catch(() => ({
+            output: this.responseTemplates.error.default,
+            length: this.tokenCounter.countTokens(this.responseTemplates.error.default),
+            tooLong: false
+        }));
     }
 
     getTopicSuggestions() {
@@ -344,12 +333,16 @@ class MyDataSource extends EventEmitter {
     }
 
     async processFeedback(sessionId, isPositive) {
-        await this.feedbackSystem.processFeedback(sessionId, isPositive);
+        await this.feedbackSystem.addFeedback(sessionId, isPositive);
         this.performanceMonitor.recordFeedback(isPositive);
+        
+        // Update scaffolding based on feedback
+        const performance = isPositive ? 0.8 : 0.2; // Simple mapping of feedback to performance
+        const updatedScaffolding = this.scaffoldingSystem.updateUserProgress(sessionId, performance);
         
         logger.loggers.app.info({
             type: 'user_feedback_processed',
-            details: { sessionId, isPositive }
+            details: { sessionId, isPositive, updatedScaffolding }
         });
     }
 
