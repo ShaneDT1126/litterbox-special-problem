@@ -2,78 +2,45 @@ const logger = require('../../utils/logger');
 
 class FeedbackSystem {
     constructor() {
-        this.userFeedback = new Map();
-        this.performanceThresholds = {
-            low: 0.3,
-            medium: 0.7
-        };
+        this.feedbackStore = new Map();
     }
 
-    async processFeedback(sessionId, isPositive) {
-        if (!this.userFeedback.has(sessionId)) {
-            this.userFeedback.set(sessionId, { positiveCount: 0, negativeCount: 0, totalInteractions: 0 });
+    getFeedback(sessionId) {
+        if (!this.feedbackStore.has(sessionId)) {
+            this.feedbackStore.set(sessionId, { positiveCount: 0, negativeCount: 0 });
         }
+        return this.feedbackStore.get(sessionId);
+    }
 
-        const feedback = this.userFeedback.get(sessionId);
-        feedback.totalInteractions++;
-
+    addFeedback(sessionId, isPositive) {
+        const feedback = this.getFeedback(sessionId);
         if (isPositive) {
             feedback.positiveCount++;
         } else {
             feedback.negativeCount++;
         }
+        this.feedbackStore.set(sessionId, feedback);
 
         logger.loggers.feedbackSystem.info({
-            type: 'feedback_processed',
+            type: 'feedback_added',
             details: { sessionId, isPositive, currentFeedback: feedback }
         });
-
-        return feedback;
     }
 
-    async getFeedback(sessionId) {
-        return this.userFeedback.get(sessionId) || { positiveCount: 0, negativeCount: 0, totalInteractions: 0 };
-    }
-
-    async getUserPerformance(sessionId) {
-        const feedback = await this.getFeedback(sessionId);
-        if (feedback.totalInteractions === 0) {
-            return 0.5; // Default to medium performance if no interactions
-        }
-        return feedback.positiveCount / feedback.totalInteractions;
-    }
-
-    async getSupportLevel(sessionId) {
-        const performance = await this.getUserPerformance(sessionId);
-        if (performance < this.performanceThresholds.low) {
-            return 'high_support';
-        } else if (performance < this.performanceThresholds.medium) {
-            return 'medium_support';
-        } else {
-            return 'low_support';
-        }
-    }
-
-    async recordInteraction(sessionId, interactionType) {
-        if (!this.userFeedback.has(sessionId)) {
-            this.userFeedback.set(sessionId, { positiveCount: 0, negativeCount: 0, totalInteractions: 0 });
-        }
-
-        const feedback = this.userFeedback.get(sessionId);
-        feedback.totalInteractions++;
-
-        logger.loggers.feedbackSystem.info({
-            type: 'interaction_recorded',
-            details: { sessionId, interactionType, currentFeedback: feedback }
-        });
-    }
-
-    async resetFeedback(sessionId) {
-        this.userFeedback.delete(sessionId);
+    resetFeedback(sessionId) {
+        this.feedbackStore.set(sessionId, { positiveCount: 0, negativeCount: 0 });
+        
         logger.loggers.feedbackSystem.info({
             type: 'feedback_reset',
             details: { sessionId }
         });
+    }
+
+    getFeedbackRatio(sessionId) {
+        const feedback = this.getFeedback(sessionId);
+        const total = feedback.positiveCount + feedback.negativeCount;
+        if (total === 0) return 0.5; // Default to neutral if no feedback
+        return feedback.positiveCount / total;
     }
 }
 

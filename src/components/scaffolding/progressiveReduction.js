@@ -2,146 +2,108 @@ const logger = require('../../utils/logger');
 
 class ProgressiveReduction {
     constructor() {
-        this.reductionLevels = {
-            NONE: 'none',
-            LOW: 'low',
-            MEDIUM: 'medium',
-            HIGH: 'high'
-        };
-
-        this.performanceThresholds = {
-            low: 0.3,
-            medium: 0.6,
-            high: 0.8
-        };
+        this.reductionLevels = ['none', 'low', 'medium', 'high'];
+        this.sessionReductionLevels = new Map();
     }
 
-    determineReductionLevel(sessionId, feedback) {
-        const performance = this._calculatePerformance(feedback);
-        const interactionCount = feedback.totalInteractions;
+    determineReductionLevel(sessionId) {
+        if (!this.sessionReductionLevels.has(sessionId)) {
+            this.sessionReductionLevels.set(sessionId, 'none');
+        }
+        return this.sessionReductionLevels.get(sessionId);
+    }
 
-        let reductionLevel = this.reductionLevels.NONE;
+    updateReductionLevel(sessionId, performance) {
+        const currentLevel = this.determineReductionLevel(sessionId);
+        const currentIndex = this.reductionLevels.indexOf(currentLevel);
 
-        if (interactionCount > 5) {
-            if (performance >= this.performanceThresholds.high) {
-                reductionLevel = this.reductionLevels.HIGH;
-            } else if (performance >= this.performanceThresholds.medium) {
-                reductionLevel = this.reductionLevels.MEDIUM;
-            } else if (performance >= this.performanceThresholds.low) {
-                reductionLevel = this.reductionLevels.LOW;
-            }
+        let newIndex;
+        if (performance > 0.7) {
+            newIndex = Math.min(currentIndex + 1, this.reductionLevels.length - 1);
+        } else if (performance < 0.3) {
+            newIndex = Math.max(currentIndex - 1, 0);
+        } else {
+            newIndex = currentIndex;
         }
 
+        const newLevel = this.reductionLevels[newIndex];
+        this.sessionReductionLevels.set(sessionId, newLevel);
+
         logger.loggers.progressiveReduction.info({
-            type: 'reduction_level_determined',
-            details: { sessionId, performance, interactionCount, reductionLevel }
+            type: 'reduction_level_updated',
+            details: { sessionId, oldLevel: currentLevel, newLevel, performance }
         });
 
-        return reductionLevel;
+        return newLevel;
     }
 
-    applyReduction(content, reductionLevel) {
+    reduceContent(content, reductionLevel) {
         switch (reductionLevel) {
-            case this.reductionLevels.HIGH:
+            case 'high':
                 return this._highReduction(content);
-            case this.reductionLevels.MEDIUM:
+            case 'medium':
                 return this._mediumReduction(content);
-            case this.reductionLevels.LOW:
+            case 'low':
                 return this._lowReduction(content);
             default:
                 return content;
         }
     }
 
-    _calculatePerformance(feedback) {
-        if (feedback.totalInteractions === 0) {
-            return 0;
-        }
-        return feedback.positiveCount / feedback.totalInteractions;
-    }
-
     _highReduction(content) {
         if (typeof content === 'string') {
-            // For strings, keep only the first quarter
-            return content.slice(0, Math.max(1, Math.floor(content.length / 4)));
+            // For strings, keep the first 20% of characters
+            return content.slice(0, Math.ceil(content.length * 0.2));
         } else if (Array.isArray(content)) {
-            // For arrays (e.g., of sentences or paragraphs), keep only the first and last items
-            return content.length <= 2 ? content : [content[0], content[content.length - 1]];
+            // For arrays, keep the first and last elements, plus 20% of the middle
+            if (content.length <= 2) return content;
+            const middleCount = Math.ceil((content.length - 2) * 0.2);
+            const middleStart = Math.floor((content.length - middleCount) / 2);
+            return [
+                content[0],
+                ...content.slice(middleStart, middleStart + middleCount),
+                content[content.length - 1]
+            ];
         }
-        return content; // If it's neither string nor array, return as is
+        // For other types, return as is
+        return content;
     }
 
     _mediumReduction(content) {
         if (typeof content === 'string') {
-            // For strings, keep the first half
-            return content.slice(0, Math.max(1, Math.floor(content.length / 2)));
+            // For strings, keep the first 50% of characters
+            return content.slice(0, Math.ceil(content.length * 0.5));
         } else if (Array.isArray(content)) {
-            // For arrays, keep every other item
+            // For arrays, keep every other element
             return content.filter((_, index) => index % 2 === 0);
         }
+        // For other types, return as is
         return content;
     }
 
     _lowReduction(content) {
         if (typeof content === 'string') {
-            // For strings, keep three quarters
-            return content.slice(0, Math.max(1, Math.floor(content.length * 3 / 4)));
+            // For strings, keep the first 80% of characters
+            return content.slice(0, Math.ceil(content.length * 0.8));
         } else if (Array.isArray(content)) {
-            // For arrays, remove only the last quarter of items
-            const cutoff = Math.floor(content.length * 3 / 4);
-            return content.slice(0, Math.max(1, cutoff));
+            // For arrays, remove every 5th element
+            return content.filter((_, index) => (index + 1) % 5 !== 0);
         }
+        // For other types, return as is
         return content;
     }
 
-    applyReduction(content, reductionLevel) {
-        let reducedContent;
+    reduceContent(content, reductionLevel) {
         switch (reductionLevel) {
-            case this.reductionLevels.HIGH:
-                reducedContent = this._highReduction(content);
-                break;
-            case this.reductionLevels.MEDIUM:
-                reducedContent = this._mediumReduction(content);
-                break;
-            case this.reductionLevels.LOW:
-                reducedContent = this._lowReduction(content);
-                break;
+            case 'high':
+                return this._highReduction(content);
+            case 'medium':
+                return this._mediumReduction(content);
+            case 'low':
+                return this._lowReduction(content);
             default:
-                reducedContent = content;
+                return content;
         }
-
-        logger.loggers.progressiveReduction.info({
-            type: 'content_reduced',
-            details: { 
-                reductionLevel, 
-                originalLength: this._getContentLength(content),
-                reducedLength: this._getContentLength(reducedContent)
-            }
-        });
-
-        return reducedContent;
-    }
-
-    _getContentLength(content) {
-        if (typeof content === 'string') {
-            return content.length;
-        } else if (Array.isArray(content)) {
-            return content.length;
-        }
-        return 0; // If it's neither string nor array, return 0
-    }
-
-    adjustReductionBasedOnFeedback(currentReductionLevel, isPositiveFeedback) {
-        const levels = Object.values(this.reductionLevels);
-        const currentIndex = levels.indexOf(currentReductionLevel);
-
-        if (isPositiveFeedback && currentIndex < levels.length - 1) {
-            return levels[currentIndex + 1];
-        } else if (!isPositiveFeedback && currentIndex > 0) {
-            return levels[currentIndex - 1];
-        }
-
-        return currentReductionLevel;
     }
 }
 
