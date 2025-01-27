@@ -3,10 +3,12 @@ const DocumentProcessor = require('./documentProcessor');
 const { MultiQueryRetriever } = require('./multiQueryRetriever');
 const logger = require('../../utils/logger');
 const path = require('path');
+const { EventEmitter } = require('events');
 const fs = require('fs');
 
-class DocumentManager {
+class DocumentManager extends EventEmitter {
     constructor() {
+        super();
         this.documentProcessor = new DocumentProcessor();
         this.vectorStore = new VectorStore();
         this.isProcessing = false;
@@ -45,6 +47,11 @@ class DocumentManager {
 
             // Initialize MultiQueryRetriever with vectorStore
             this.multiQueryRetriever = new MultiQueryRetriever(this.vectorStore);
+
+            // Add event listener for feedback
+            this.on('feedback', async (sessionId, feedback) => {
+                await this.refreshVectorStore(sessionId, feedback);
+            });
 
             logger.loggers.documentManager.info({
                 type: 'initialization',
@@ -118,9 +125,22 @@ class DocumentManager {
     
         // Process documents
         const documents = await this.documentProcessor.processDocuments();
+
+        // Classify documents by topic
+        const classifiedDocuments = await Promise.all(documents.map(async (doc) => {
+            const classification = await this.multiQueryRetriever._classifyTopic(doc.pageContent);
+            return {
+                ...doc,
+                metadata: {
+                    ...doc.metadata,
+                    topic: classification.topic,
+                    confidence: classification.confidence
+                }
+            };
+        }));
         
         // Store in ChromaDB
-        await this.vectorStore.addDocuments(documents);
+        await this.vectorStore.addDocuments(classifiedDocuments);
     
         // Update processing status
         this.processingStatus.lastProcessed = new Date().toISOString();
@@ -301,6 +321,42 @@ class DocumentManager {
             throw new Error('VectorStore not initialized');
         }
         return this.vectorStore;
+    }
+
+    getMultiQueryRetriever() {
+        if (!this.multiQueryRetriever) {
+            throw new Error('MultiQueryRetriever not initialized');
+        }
+        return this.multiQueryRetriever;
+    }
+    
+    async refreshVectorStore(sessionId, feedback) {
+        const recentQueries = this.conversationMemory.getRecentQueries(sessionId, 5); // Get last 5 queries
+        const relevantDocuments = await this.multiQueryRetriever.retrieveDocuments(
+            recentQueries.join(' '),
+            { name: 'general' }, // Assuming a general route
+            [],
+            []
+        );
+    
+        // Re-embed relevant documents with feedback
+        const updatedDocuments = relevantDocuments.map(doc => ({
+            ...doc,
+            metadata: {
+                ...doc.metadata,
+                relevance: feedback.isPositive ? 'high' : 'low'
+            }
+        }));
+    
+        await this.vectorStore.updateDocuments(updatedDocuments);
+    
+        logger.loggers.documentManager.info({
+            type: 'vector_store_refreshed',
+            details: {
+                sessionId,
+                updatedDocumentsCount: updatedDocuments.length
+            }
+        });
     }
 
 }

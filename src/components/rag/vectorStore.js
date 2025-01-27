@@ -28,7 +28,7 @@ class VectorStore {
         });
 
         // Initialize MultiQueryRetriever
-        this.multiQueryRetriever = new MultiQueryRetriever();
+        this.multiQueryRetriever = new MultiQueryRetriever(this);
         
         // Metadata filters for computer architecture topics
         this.topicFilters = {
@@ -169,7 +169,12 @@ class VectorStore {
             });
 
             // Get results using multi-query retrieval
-            const multiResults = await this.multiQueryRetriever.retrieveDocuments(query, this);
+            const multiResults = await this.multiQueryRetriever.retrieveDocuments(
+                query,
+                options,
+                [], // Conversation context (empty for now)
+                [] // Topics (empty for now)
+            );
 
             // Process and format results
             const processedResults = await this.processQueryResults(multiResults, options);
@@ -222,12 +227,25 @@ class VectorStore {
                 `doc_${Date.now()}_${index}`
             );
 
+            // Classify documents by topic
+            const classifiedDocuments = await Promise.all(documents.map(async (doc) => {
+                const classification = await this.multiQueryRetriever._classifyTopic(doc.pageContent);
+                return {
+                    ...doc,
+                    metadata: {
+                        ...doc.metadata,
+                        topic: classification.topic,
+                        confidence: classification.confidence
+                    }
+                };
+            }));
+
             // Add to ChromaDB collection
             await this.collection.add({
                 ids: ids,
                 embeddings: embeddings,
-                documents: documents.map(doc => doc.pageContent),
-                metadatas: documents.map(doc => doc.metadata || {})
+                documents: classifiedDocuments.map(doc => doc.pageContent),
+                metadatas: classifiedDocuments  .map(doc => doc.metadata || {})
             });
 
             logger.loggers.vectorStore.info({
@@ -306,21 +324,40 @@ class VectorStore {
                     options: options
                 }
             });
-
-            const filter = this.buildMetadataFilter(options);
-
-             // If filter is empty, pass null instead
-            const actualFilter = Object.keys(filter).length > 0 ? filter : null;
-
-            const results = await this.vectorStore.similaritySearchWithScore(
-                query,
-                5,
-                actualFilter
+    
+            // Get topic classification
+            const topicClassification = await this.multiQueryRetriever._classifyTopic(query);
+            
+            // Create the where clause for ChromaDB
+            const whereClause = {
+                topic: { $eq: topicClassification }
+            };
+    
+            // Generate embeddings for the query
+            const queryEmbedding = await this.embeddings.embedQuery(query);
+    
+            // Perform the similarity search with metadata filtering
+            const results = await this.vectorStore.similaritySearchVectorWithScore(
+                queryEmbedding,
+                5, // Number of results to return
+                whereClause
             );
-
-            const processedResults = await this.processQueryResults(results, options);
+    
+            // Filter results by relevance threshold
+            const filteredResults = results.filter(([_, score]) => 
+                score >= this.relevanceThreshold
+            );
+    
+            // Process and format results
+            const processedResults = filteredResults.map(([doc, score]) => ({
+                content: doc.pageContent,
+                metadata: doc.metadata,
+                relevanceScore: score,
+                concepts: doc.metadata.concepts || []
+            }));
+    
             const formattedResults = this.formatResults(processedResults);
-
+    
             logger.loggers.vectorStore.info({
                 type: 'query_complete',
                 details: {
@@ -330,8 +367,9 @@ class VectorStore {
                     averageRelevance: this.calculateAverageRelevance(processedResults)
                 }
             });
-
+    
             return processedResults;
+    
         } catch (error) {
             logger.loggers.vectorStore.error({
                 type: 'query_error',
@@ -560,6 +598,46 @@ class VectorStore {
         }
     }
     
+    async updateDocuments(documents) {
+        const startTime = Date.now();
+        try {
+            logger.loggers.vectorStore.info({
+                type: 'update_documents_start',
+                details: { documentCount: documents.length }
+            });
+    
+            // Prepare documents for ChromaDB
+            const embeddings = await this.embeddings.embedDocuments(
+                documents.map(doc => doc.pageContent)
+            );
+    
+            // Update documents in ChromaDB collection
+            await this.collection.update({
+                ids: documents.map(doc => doc.id),
+                embeddings: embeddings,
+                documents: documents.map(doc => doc.pageContent),
+                metadatas: documents.map(doc => doc.metadata || {})
+            });
+    
+            logger.loggers.vectorStore.info({
+                type: 'update_documents_complete',
+                details: {
+                    updatedCount: documents.length,
+                    processingTime: Date.now() - startTime
+                }
+            });
+        } catch (error) {
+            logger.loggers.vectorStore.error({
+                type: 'update_documents_error',
+                details: {
+                    message: error.message,
+                    stack: error.stack,
+                    processingTime: Date.now() - startTime
+                }
+            });
+            throw error;
+        }
+    }
 }
 
 module.exports = { VectorStore };
