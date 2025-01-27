@@ -48,6 +48,7 @@
         "pdf-parse": "^1.1.1",
         "pdfjs-dist": "^4.8.69",
         "restify": "^10.0.0",
+        "sentiment": "^5.0.2",
         "winston": "^3.17.0"
     },
     "devDependencies": {
