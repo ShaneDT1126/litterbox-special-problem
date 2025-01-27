@@ -29,7 +29,8 @@ class Logger {
             'memoryTools',
             'performanceMonitor',
             'progressiveReduction',
-            'feedbackSystem'
+            'feedbackSystem',
+            'contextSummarizer'
         ];
         const fs = require('fs');
         
@@ -64,7 +65,8 @@ class Logger {
             memoryTools: this.createComponentLogger('memoryTools'),
             performanceMonitor: this.createComponentLogger('performanceMonitor'),
             progressiveReduction: this.createComponentLogger('progressiveReduction'),
-            feedbackSystem: this.createComponentLogger('feedbackSystem')
+            feedbackSystem: this.createComponentLogger('feedbackSystem'),
+            contextSummarizer: this.createComponentLogger('contextSummarizer')
         };
     }
 

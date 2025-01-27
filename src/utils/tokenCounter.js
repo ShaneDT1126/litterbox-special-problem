@@ -6,7 +6,8 @@ class TokenCounter {
     }
 
     countTokens(text) {
-        return this.encoding.encode(text).length;
+        const textAsString = String(text);
+        return this.encoding.encode(textAsString).length;
     }
 
     countMessageTokens(messages) {
